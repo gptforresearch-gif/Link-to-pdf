@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Link to PDF — paste a link, print the page</title>
+<meta name="description" content="Paste any web link and get a PDF you can print, save or send.">
+<meta name="theme-color" content="#E9ECEF">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<main class="sheet" id="sheet">
+  <span class="mark tl" aria-hidden="true"></span>
+  <span class="mark tr" aria-hidden="true"></span>
+  <span class="mark bl" aria-hidden="true"></span>
+  <span class="mark br" aria-hidden="true"></span>
+
+  <header class="masthead">
+    <div class="inkbar" id="inkbar" aria-hidden="true">
+      <i data-ink="c"></i><i data-ink="m"></i><i data-ink="y"></i><i data-ink="k"></i>
+    </div>
+    <p class="eyebrow">Web page in · paper out</p>
+    <h1 class="wordmark">Link<span class="arrow">→</span>PDF</h1>
+    <p class="standfirst">Paste any link. Get a PDF you can print, keep or send.</p>
+  </header>
+
+  <!-- ── FORM ────────────────────────────────────────────────── -->
+  <section class="panel" id="formPanel">
+    <div class="field">
+      <label class="label" for="url">The link</label>
+      <input id="url" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+             placeholder="https://" enterkeyhint="go">
+      <button class="paste" id="pasteBtn" type="button">Paste</button>
+    </div>
+
+    <div class="field">
+      <span class="label">Style</span>
+      <div class="seg" role="radiogroup" aria-label="Style">
+        <button role="radio" aria-checked="true" data-mode="exact" class="on">Exact copy</button>
+        <button role="radio" aria-checked="false" data-mode="reader">Reading version</button>
+      </div>
+      <p class="hint" id="modeHint">Looks just like the page on screen — pictures, colours and all.</p>
+    </div>
+
+    <div class="field">
+      <span class="label">Paper</span>
+      <div class="seg thirds" role="radiogroup" aria-label="Paper size">
+        <button role="radio" aria-checked="true" data-size="A4" class="on">A4</button>
+        <button role="radio" aria-checked="false" data-size="Letter">Letter</button>
+        <button role="radio" aria-checked="false" data-size="Legal">Legal</button>
+      </div>
+    </div>
+
+    <button class="go" id="goBtn" type="button">Make PDF</button>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+  </section>
+
+  <!-- ── RESULT ──────────────────────────────────────────────── -->
+  <section class="panel result" id="resultPanel" hidden>
+    <div class="reg" aria-hidden="true">
+      <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="11"/><circle cx="20" cy="20" r="4.5"/>
+      <line x1="20" y1="0" x2="20" y2="40"/><line x1="0" y1="20" x2="40" y2="20"/></svg>
+    </div>
+    <p class="label">Ready</p>
+    <p class="filename" id="fileName">page.pdf</p>
+    <p class="specs" id="fileSpecs"></p>
+
+    <div class="actions">
+      <button id="downloadBtn" class="act primary">Download</button>
+      <button id="printBtn" class="act">Print</button>
+      <button id="shareBtn" class="act" hidden>Share</button>
+      <button id="linkBtn" class="act">Copy link</button>
+    </div>
+
+    <p class="expiry">The link works for about a day, then the file is deleted. Download it to keep it.</p>
+    <div class="tail">
+      <button class="again" id="redoBtn">Redo as reading version</button>
+      <button class="again" id="againBtn">Make another</button>
+    </div>
+  </section>
+
+  <footer class="colophon">
+    <span>Some pages can't be captured — anything behind a login or a hard paywall.</span>
+  </footer>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
