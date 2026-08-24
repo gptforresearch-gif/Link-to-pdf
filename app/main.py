@@ -28,8 +28,25 @@ PDF_DIR = Path(os.environ.get("PDF_DIR", "/tmp/linkpdf"))
 PDF_DIR.mkdir(parents=True, exist_ok=True)
 
 FILE_LIFETIME_SECONDS = 24 * 60 * 60      # delete generated files after 24h
-NAV_TIMEOUT_MS = 45_000                   # give slow sites time to load
+NAV_TIMEOUT_MS = 40_000                   # give slow sites time to load
+OVERALL_BUDGET_S = 85                     # hard ceiling on one job
 MAX_PAGES = 1                             # one browser page at a time (512MB RAM)
+RESTART_EVERY = 10                        # relaunch Chromium periodically to free memory
+
+# Ad, tracker and video traffic: useless in a PDF, and the main reason a heavy
+# news page exhausts a small server. Blocking it cuts memory and time enormously.
+BLOCKED_HOSTS = (
+    "doubleclick.net", "googlesyndication", "googletagmanager", "google-analytics",
+    "adservice.google", "adsystem", "amazon-adsystem", "adnxs.com", "criteo",
+    "pubmatic", "rubiconproject", "openx.net", "taboola", "outbrain", "mgid.com",
+    "smartadserver", "sharethrough", "teads.tv", "moatads", "zedo.com", "3lift.com",
+    "casalemedia", "indexww.com", "sovrn.com", "bidswitch", "adform.net",
+    "scorecardresearch", "chartbeat", "quantserve", "hotjar", "segment.io",
+    "mixpanel", "amplitude.com", "clevertap", "moengage", "izooto", "onesignal",
+    "pushengage", "vidoomy", "jwpsrv.com", "brightcove", "connatix", "youtube.com/embed",
+    "facebook.net", "connect.facebook", "platform.twitter", "ads-twitter",
+)
+BLOCKED_TYPES = {"media", "websocket", "eventsource"}
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -137,14 +154,22 @@ app = FastAPI(title="Link to PDF", docs_url=None, redoc_url=None)
 
 _browser = None
 _playwright = None
+_renders = 0
 _lock = asyncio.Semaphore(MAX_PAGES)
 
 
 async def get_browser():
-    """One Chromium instance, reused. Restarted if it ever dies."""
-    global _browser, _playwright
-    if _browser is not None and _browser.is_connected():
+    """One Chromium instance, reused. Relaunched periodically and if it dies."""
+    global _browser, _playwright, _renders
+    if _browser is not None and _browser.is_connected() and _renders < RESTART_EVERY:
         return _browser
+    if _browser is not None:
+        try:
+            await _browser.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _browser = None
+    _renders = 0
     if _playwright is None:
         _playwright = await async_playwright().start()
     _browser = await _playwright.chromium.launch(
@@ -155,6 +180,10 @@ async def get_browser():
             "--disable-extensions",
             "--disable-background-networking",
             "--disable-features=IsolateOrigins,site-per-process,TranslateUI",
+            "--disable-accelerated-2d-canvas",
+            "--disable-software-rasterizer",
+            "--disable-background-timer-throttling",
+            "--renderer-process-limit=2",
             "--mute-audio",
             "--no-first-run",
             "--js-flags=--max-old-space-size=256",
@@ -248,11 +277,27 @@ async def render_pdf(url: str, mode: str, size: str) -> tuple[bytes, str]:
         return await _render_once(url, mode, size)
 
 
+async def _block_junk(route):
+    """Drop ads, trackers and video before they cost us memory."""
+    req = route.request
+    try:
+        if req.resource_type in BLOCKED_TYPES:
+            return await route.abort()
+        url = req.url.lower()
+        if any(h in url for h in BLOCKED_HOSTS):
+            return await route.abort()
+        await route.continue_()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _render_once(url: str, mode: str, size: str) -> tuple[bytes, str]:
+    global _renders
     browser = await get_browser()
+    _renders += 1
     context = await browser.new_context(
         user_agent=USER_AGENT,
-        viewport={"width": 1280, "height": 1600},
+        viewport={"width": 1280, "height": 1000},
         locale="en-US",
         java_script_enabled=True,
         ignore_https_errors=True,
@@ -260,6 +305,7 @@ async def _render_once(url: str, mode: str, size: str) -> tuple[bytes, str]:
         service_workers="block",
     )
     try:
+        await context.route("**/*", _block_junk)
         page = await context.new_page()
         page.set_default_timeout(NAV_TIMEOUT_MS)
 
@@ -345,13 +391,13 @@ async def _render_once(url: str, mode: str, size: str) -> tuple[bytes, str]:
             await page.evaluate(
                 """async () => {
                     const step = window.innerHeight;
-                    const max = Math.min(document.body.scrollHeight, 40000);
+                    const max = Math.min(document.body.scrollHeight, step * 30);
                     for (let y = 0; y < max; y += step) {
                         window.scrollTo(0, y);
-                        await new Promise(r => setTimeout(r, 90));
+                        await new Promise(r => setTimeout(r, 70));
                     }
                     window.scrollTo(0, 0);
-                    await new Promise(r => setTimeout(r, 300));
+                    await new Promise(r => setTimeout(r, 250));
                 }"""
             )
         except Exception:
@@ -409,7 +455,15 @@ async def api_make(req: MakeRequest):
 
     async with _lock:
         try:
-            pdf, title = await render_pdf(url, mode, size)
+            pdf, title = await asyncio.wait_for(
+                render_pdf(url, mode, size), timeout=OVERALL_BUDGET_S
+            )
+        except asyncio.TimeoutError:
+            hint = (
+                " Try Reading version — it's much lighter and usually works."
+                if mode == "exact" else ""
+            )
+            raise HTTPException(504, f"That page was too heavy for the server.{hint}")
         except HTTPException:
             raise
         except Exception as exc:  # noqa: BLE001

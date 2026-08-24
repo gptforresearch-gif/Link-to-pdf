@@ -85,6 +85,18 @@
   goBtn.addEventListener("click", make);
   $("againBtn").addEventListener("click", reset);
 
+  function explain(status, usedMode) {
+    const lighter = usedMode === "exact"
+      ? " Try Reading version — it's much lighter and usually gets through."
+      : " Try again in a moment.";
+    if (status === 502 || status === 503 || status === 504) {
+      return "That page was too heavy for the server." + lighter;
+    }
+    if (status === 429) return "Too many at once. Wait a moment and try again.";
+    if (status >= 500) return "The server had trouble with that page." + lighter;
+    return "Couldn't make a PDF from that link." + lighter;
+  }
+
   function setStatus(text, bad) {
     statusEl.textContent = text;
     statusEl.classList.toggle("bad", !!bad);
@@ -138,13 +150,30 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url, mode, size }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Something went wrong.");
+
+      // The server may die mid-render on a heavy page and send nothing back,
+      // so never assume the reply is valid JSON.
+      const raw = await res.text();
+      let data = null;
+      if (raw) { try { data = JSON.parse(raw); } catch { /* not JSON */ } }
+
+      if (!res.ok || !data || !data.id) {
+        throw new Error((data && data.detail) || explain(res.status, mode));
+      }
       current = data;
       blobCache = null;
       showResult(data);
     } catch (err) {
-      setStatus(err.message || "Couldn't reach the server. Check your connection.", true);
+      // A dropped connection surfaces as a TypeError like "Failed to fetch".
+      const network =
+        err instanceof TypeError ||
+        /failed to fetch|networkerror|load failed/i.test((err && err.message) || "");
+      setStatus(
+        network
+          ? "Couldn't reach the server. Check your connection, or it may still be waking up — try again in a moment."
+          : (err && err.message) || "Something went wrong. Try again.",
+        true
+      );
     } finally {
       stopPress();
       goBtn.disabled = false;
