@@ -4,10 +4,12 @@ Paste a link, get a printable PDF.
 """
 
 import asyncio
+import io
 import os
 import re
 import time
 import uuid
+from html import escape
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -17,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
 from pydantic import BaseModel
+from pypdf import PdfReader, PdfWriter
 
 # ----------------------------------------------------------------------------
 # Settings
@@ -28,10 +31,22 @@ PDF_DIR = Path(os.environ.get("PDF_DIR", "/tmp/linkpdf"))
 PDF_DIR.mkdir(parents=True, exist_ok=True)
 
 FILE_LIFETIME_SECONDS = 24 * 60 * 60      # delete generated files after 24h
-NAV_TIMEOUT_MS = 40_000                   # give slow sites time to load
-OVERALL_BUDGET_S = 85                     # hard ceiling on one job
+NAV_TIMEOUT_MS = 30_000                   # give slow sites time to load
 MAX_PAGES = 1                             # one browser page at a time (512MB RAM)
+MAX_READER_CHARS = 45_000                 # ~13 printed pages; beyond this, truncate
 RESTART_EVERY = 10                        # relaunch Chromium periodically to free memory
+
+# A heavy page can't be captured in full on a small server, so rather than fail we
+# step down: the style asked for, then something lighter, then bare bones.
+# Budgets are seconds, and must total well under the host's request timeout.
+CASCADE = {
+    "exact":  [("exact", 32), ("reader", 22), ("lite", 28)],
+    "reader": [("reader", 35), ("lite", 28)],
+}
+DOWNGRADE_NOTE = {
+    "reader": "That page was too heavy to copy in full, so this is the reading version.",
+    "lite":   "That page was very heavy, so this is a simplified copy without pictures.",
+}
 
 # Ad, tracker and video traffic: useless in a PDF, and the main reason a heavy
 # news page exhausts a small server. Blocking it cuts memory and time enormously.
@@ -114,8 +129,10 @@ READER_TEMPLATE = """<!doctype html>
     font-family: "Helvetica Neue", Arial, sans-serif;
     line-height: 1.3;
     margin: 20pt 0 7pt;
-    page-break-after: avoid;
   }}
+  /* Keep a heading with its text, but not when headings run back-to-back
+     (an index page), or every one lands on a page of its own. */
+  h2:has(+ p), h3:has(+ p), h4:has(+ p) {{ page-break-after: avoid; }}
   h2 {{ font-size: 14pt; }}
   h3 {{ font-size: 12pt; }}
   p {{ margin: 0 0 11pt; orphans: 3; widows: 3; }}
@@ -250,6 +267,69 @@ def count_pdf_pages(data: bytes) -> int:
     return max(1, len(re.findall(rb"/Type\s*/Page[^s]", data)))
 
 
+def encrypt_pdf(data: bytes, password: str) -> bytes:
+    """Lock the PDF with AES-256. Opening it then requires the password."""
+    try:
+        writer = PdfWriter(clone_from=PdfReader(io.BytesIO(data)))
+        writer.encrypt(user_password=password, algorithm="AES-256")
+        out = io.BytesIO()
+        writer.write(out)
+        return out.getvalue()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(500, "Couldn't put a password on that PDF.")
+
+
+def text_to_html(text: str, title: str) -> str:
+    """Blank lines separate paragraphs; single line breaks are kept."""
+    blocks = re.split(r"\n\s*\n", text.strip())
+    body = "".join(
+        "<p>" + escape(b.strip()).replace("\n", "<br>") + "</p>"
+        for b in blocks if b.strip()
+    )
+    return READER_TEMPLATE.format(
+        base="about:blank",
+        title=escape(title) if title else "Untitled note",
+        source="typed text",
+        date=time.strftime("%d %b %Y"),
+        body=body or "<p></p>",
+    )
+
+
+async def render_text_pdf(text: str, title: str, size: str) -> bytes:
+    """No web page involved, so this is cheap even on a small server."""
+    browser = await get_browser()
+    global _renders
+    _renders += 1
+    context = await browser.new_context(viewport={"width": 1000, "height": 800})
+    try:
+        page = await context.new_page()
+        await page.set_content(text_to_html(text, title), wait_until="load")
+        return await page.pdf(
+            format=PAGE_SIZES.get(size, "A4"),
+            print_background=True,
+            margin={"top": "18mm", "bottom": "18mm", "left": "18mm", "right": "18mm"},
+            display_header_footer=True,
+            header_template="<div></div>",
+            footer_template=(
+                '<div style="width:100%;font-size:7pt;font-family:Helvetica;'
+                'color:#8a939c;padding:0 18mm;text-align:right;">'
+                '<span class="pageNumber"></span></div>'
+            ),
+        )
+    finally:
+        await context.close()
+
+
+def _looks_like_index(html: str) -> bool:
+    """A listing page is mostly headings and links with very little prose."""
+    headings = len(re.findall(r"<h[1-6][\s>]", html, re.I))
+    paras = re.findall(r"<p[\s>](.*?)</p>", html, re.I | re.S)
+    prose = sum(len(re.sub(r"<[^>]+>", "", p).strip()) for p in paras)
+    if headings >= 8 and prose < headings * 120:
+        return True
+    return len(paras) < 3 and headings > 3
+
+
 PAGE_SIZES = {"A4": "A4", "Letter": "Letter", "Legal": "Legal"}
 
 
@@ -258,7 +338,7 @@ PAGE_SIZES = {"A4": "A4", "Letter": "Letter", "Legal": "Legal"}
 # ----------------------------------------------------------------------------
 
 
-async def render_pdf(url: str, mode: str, size: str) -> tuple[bytes, str]:
+async def render_pdf(url: str, mode: str, size: str) -> tuple[bytes, str, str]:
     """Render once; if the browser died between requests, relaunch and try again."""
     global _browser
     try:
@@ -277,21 +357,26 @@ async def render_pdf(url: str, mode: str, size: str) -> tuple[bytes, str]:
         return await _render_once(url, mode, size)
 
 
-async def _block_junk(route):
-    """Drop ads, trackers and video before they cost us memory."""
-    req = route.request
-    try:
-        if req.resource_type in BLOCKED_TYPES:
-            return await route.abort()
-        url = req.url.lower()
-        if any(h in url for h in BLOCKED_HOSTS):
-            return await route.abort()
-        await route.continue_()
-    except Exception:  # noqa: BLE001
-        pass
+def make_blocker(mode: str):
+    """Drop ads, trackers and video. In 'lite' mode drop images and fonts too."""
+    heavy = {"image", "font", "media"} if mode == "lite" else set()
+
+    async def block(route):
+        req = route.request
+        try:
+            if req.resource_type in BLOCKED_TYPES or req.resource_type in heavy:
+                return await route.abort()
+            url = req.url.lower()
+            if any(h in url for h in BLOCKED_HOSTS):
+                return await route.abort()
+            await route.continue_()
+        except Exception:  # noqa: BLE001
+            pass
+
+    return block
 
 
-async def _render_once(url: str, mode: str, size: str) -> tuple[bytes, str]:
+async def _render_once(url: str, mode: str, size: str) -> tuple[bytes, str, str]:
     global _renders
     browser = await get_browser()
     _renders += 1
@@ -305,7 +390,7 @@ async def _render_once(url: str, mode: str, size: str) -> tuple[bytes, str]:
         service_workers="block",
     )
     try:
-        await context.route("**/*", _block_junk)
+        await context.route("**/*", make_blocker(mode))
         page = await context.new_page()
         page.set_default_timeout(NAV_TIMEOUT_MS)
 
@@ -325,11 +410,13 @@ async def _render_once(url: str, mode: str, size: str) -> tuple[bytes, str]:
                 504, "That page took too long to open. It may be down or blocking us."
             )
 
-        # Let late-loading content settle.
-        try:
-            await page.wait_for_load_state("networkidle", timeout=8000)
-        except Exception:
-            pass
+        # Let late-loading content settle. Ad-heavy pages never truly go idle,
+        # so this is a short courtesy wait, not a requirement.
+        if mode != "lite":
+            try:
+                await page.wait_for_load_state("networkidle", timeout=4000)
+            except Exception:
+                pass
 
         title = (await page.title()) or ""
 
@@ -344,10 +431,25 @@ async def _render_once(url: str, mode: str, size: str) -> tuple[bytes, str]:
                 favor_precision=False,
             )
             if not extracted or len(extracted) < 200:
-                # Nothing article-like on this page: fall back to the exact copy.
-                mode = "exact"
+                # No article here (a homepage or index). Capture what's on screen
+                # without the expensive scroll pass, which is what costs us.
+                mode = "lite"
+            elif _looks_like_index(extracted):
+                # Mostly headlines with little prose: a listing page. Printing it
+                # as an "article" gives dozens of pages of links, which is useless.
+                mode = "lite"
             else:
                 body = re.sub(r"</?doc[^>]*>", "", extracted).strip()
+                # An index or homepage can extract into hundreds of pages of
+                # headlines. Nobody wants to print that.
+                if len(body) > MAX_READER_CHARS:
+                    cut = body[:MAX_READER_CHARS]
+                    cut = cut[: cut.rfind("</p>") + 4] or cut
+                    body = cut + (
+                        '<p style="margin-top:18pt;font-family:Helvetica;font-size:9pt;'
+                        'color:#5b6672">[This page was very long and has been cut short '
+                        'here. Open the original for the rest.]</p>'
+                    )
                 # The extractor often repeats the headline as the first heading.
                 first = re.match(r"\s*<h[1-3][^>]*>(.*?)</h[1-3]>", body, re.S | re.I)
                 if first:
@@ -380,33 +482,35 @@ async def _render_once(url: str, mode: str, size: str) -> tuple[bytes, str]:
                         '<span class="pageNumber"></span></div>'
                     ),
                 )
-                return pdf, title
+                return pdf, title, "reader"
 
         # Exact mode: scroll through to trigger lazy-loaded images, tidy overlays.
         try:
             await page.add_style_tag(content=CLEANUP_CSS)
         except Exception:  # noqa: BLE001
             pass  # a locked-down site: capture it as-is rather than fail
-        try:
-            await page.evaluate(
-                """async () => {
-                    const step = window.innerHeight;
-                    const max = Math.min(document.body.scrollHeight, step * 30);
-                    for (let y = 0; y < max; y += step) {
-                        window.scrollTo(0, y);
-                        await new Promise(r => setTimeout(r, 70));
-                    }
-                    window.scrollTo(0, 0);
-                    await new Promise(r => setTimeout(r, 250));
-                }"""
-            )
-        except Exception:
-            pass
 
-        try:
-            await page.wait_for_load_state("networkidle", timeout=6000)
-        except Exception:
-            pass
+        if mode != "lite":
+            try:
+                await page.evaluate(
+                    """async () => {
+                        const step = window.innerHeight;
+                        const max = Math.min(document.body.scrollHeight, step * 12);
+                        for (let y = 0; y < max; y += step) {
+                            window.scrollTo(0, y);
+                            await new Promise(r => setTimeout(r, 60));
+                        }
+                        window.scrollTo(0, 0);
+                        await new Promise(r => setTimeout(r, 200));
+                    }"""
+                )
+            except Exception:
+                pass
+
+            try:
+                await page.wait_for_load_state("networkidle", timeout=3000)
+            except Exception:
+                pass
 
         await page.emulate_media(media="screen")
         pdf = await page.pdf(
@@ -424,7 +528,7 @@ async def _render_once(url: str, mode: str, size: str) -> tuple[bytes, str]:
                 '<span class="pageNumber"></span></div>'
             ),
         )
-        return pdf, title
+        return pdf, title, mode
     finally:
         await context.close()
 
@@ -438,6 +542,75 @@ class MakeRequest(BaseModel):
     url: str
     mode: str = "exact"      # "exact" | "reader"
     size: str = "A4"         # "A4" | "Letter" | "Legal"
+    password: str | None = None
+
+
+class TextRequest(BaseModel):
+    text: str
+    title: str = ""
+    size: str = "A4"
+    password: str | None = None
+
+
+def _store(pdf: bytes, name: str) -> str:
+    file_id = uuid.uuid4().hex[:12]
+    (PDF_DIR / f"{file_id}.pdf").write_bytes(pdf)
+    (PDF_DIR / f"{file_id}.name").write_text(name, encoding="utf-8")
+    return file_id
+
+
+def _clean_password(pw: str | None) -> str | None:
+    pw = (pw or "").strip()
+    if not pw:
+        return None
+    if len(pw) > 128:
+        raise HTTPException(400, "That password is too long.")
+    return pw
+
+
+@app.post("/api/text")
+async def api_text(req: TextRequest):
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Type or paste some text first.")
+    if len(text) > 200_000:
+        raise HTTPException(400, "That's a lot of text. Trim it to about 200,000 characters.")
+    size = req.size if req.size in PAGE_SIZES else "A4"
+    password = _clean_password(req.password)
+
+    sweep_old_files()
+    async with _lock:
+        try:
+            pdf = await asyncio.wait_for(
+                render_text_pdf(text, req.title.strip(), size), timeout=40
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(504, "That took too long. Try shorter text.")
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001
+            raise HTTPException(500, "Couldn't turn that text into a PDF.")
+
+    pages = count_pdf_pages(pdf)
+    if password:
+        pdf = encrypt_pdf(pdf, password)
+
+    stem = req.title.strip() or text[:40]
+    name = safe_filename(stem, "https://typed.text")
+    file_id = _store(pdf, name)
+    return JSONResponse({
+        "id": file_id,
+        "filename": name,
+        "title": req.title.strip() or "Typed text",
+        "source": "typed text",
+        "pages": pages,
+        "kb": round(len(pdf) / 1024),
+        "style": "text",
+        "locked": bool(password),
+        "note": None,
+        "view": f"/f/{file_id}",
+        "download": f"/d/{file_id}",
+    })
 
 
 @app.get("/healthz")
@@ -453,30 +626,64 @@ async def api_make(req: MakeRequest):
 
     sweep_old_files()
 
-    async with _lock:
-        try:
-            pdf, title = await asyncio.wait_for(
-                render_pdf(url, mode, size), timeout=OVERALL_BUDGET_S
-            )
-        except asyncio.TimeoutError:
-            hint = (
-                " Try Reading version — it's much lighter and usually works."
-                if mode == "exact" else ""
-            )
-            raise HTTPException(504, f"That page was too heavy for the server.{hint}")
-        except HTTPException:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            msg = str(exc)
-            if "ERR_NAME_NOT_RESOLVED" in msg:
-                raise HTTPException(400, "That website couldn't be found. Check the link.")
-            if "ERR_CONNECTION" in msg or "ERR_ABORTED" in msg:
-                raise HTTPException(502, "That website refused the connection.")
-            raise HTTPException(500, "Couldn't turn that page into a PDF. Try the other style.")
+    plan = CASCADE.get(mode, CASCADE["exact"])
+    pdf = title = None
+    used = mode
+    last_error = None
 
-    file_id = uuid.uuid4().hex[:12]
-    (PDF_DIR / f"{file_id}.pdf").write_bytes(pdf)
-    (PDF_DIR / f"{file_id}.name").write_text(safe_filename(title, url), encoding="utf-8")
+    async with _lock:
+        for attempt, budget in plan:
+            try:
+                pdf, title, effective = await asyncio.wait_for(
+                    render_pdf(url, attempt, size), timeout=budget
+                )
+                used = effective
+                break
+            except asyncio.TimeoutError:
+                last_error = "heavy"
+                # A cancelled render leaves Chromium holding memory. Force a
+                # fresh browser before the next attempt, or that one dies too.
+                global _renders
+                _renders = RESTART_EVERY
+                continue
+            except HTTPException as exc:
+                # A bad link or dead site won't improve on retry.
+                if exc.status_code < 500:
+                    raise
+                last_error = "server"
+                continue
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc)
+                if "ERR_NAME_NOT_RESOLVED" in msg:
+                    raise HTTPException(400, "That website doesn't exist. Check the spelling of the link.")
+                last_error = "server"
+                continue
+
+    if pdf is None:
+        if last_error == "heavy":
+            raise HTTPException(
+                504,
+                "That page is too heavy for this server even simplified. "
+                "It's usually an endless-scrolling homepage — try a link to a single article instead.",
+            )
+        raise HTTPException(500, "Couldn't turn that page into a PDF.")
+
+    note = None
+    if used != mode:
+        if last_error == "heavy":
+            note = DOWNGRADE_NOTE.get(used)
+        elif used == "lite":
+            note = ("That page is a list of headlines rather than an article, "
+                    "so this is a plain copy of the page itself.")
+        else:
+            note = DOWNGRADE_NOTE.get(used)
+
+    file_id = _store(pdf, safe_filename(title, url))
+    pages = count_pdf_pages(pdf)
+    password = _clean_password(req.password)
+    if password:
+        pdf = encrypt_pdf(pdf, password)
+        (PDF_DIR / f"{file_id}.pdf").write_bytes(pdf)
 
     return JSONResponse(
         {
@@ -484,8 +691,11 @@ async def api_make(req: MakeRequest):
             "filename": safe_filename(title, url),
             "title": title or urlparse(url).hostname,
             "source": urlparse(url).hostname,
-            "pages": count_pdf_pages(pdf),
+            "pages": pages,
             "kb": round(len(pdf) / 1024),
+            "style": used,
+            "locked": bool(password),
+            "note": note,
             "view": f"/f/{file_id}",
             "download": f"/d/{file_id}",
         }
