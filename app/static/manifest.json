@@ -1,10 +1,12 @@
 {
+  "id": "/",
   "name": "Link to PDF",
-  "short_name": "Link→PDF",
+  "short_name": "Link to PDF",
   "description": "Paste any web link and get a PDF you can print, save or send.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
   "background_color": "#e9ecef",
   "theme_color": "#e9ecef",
   "orientation": "portrait",

@@ -318,6 +318,102 @@
   paintChoices();
   handleShare();
 
+  // ── making sure it installs properly ──────────────────────────
+  const ua = navigator.userAgent || "";
+  const isAndroid = /Android/i.test(ua);
+  const inAppBrowser =
+    /FBAN|FBAV|FB_IAB|Instagram|WhatsApp|Line\/|Snapchat|Twitter|MicroMessenger|GSA\//i.test(ua) ||
+    (isAndroid && /\bwv\b/.test(ua));
+  const standalone =
+    window.matchMedia("(display-mode: standalone)").matches ||
+    window.navigator.standalone === true;
+
+  // Opened from inside WhatsApp, Instagram etc: installing from here silently
+  // produces a bookmark with no share-menu entry, so say so plainly.
+  if (inAppBrowser && !standalone) {
+    $("browserAlert").hidden = false;
+    $("copyForChrome").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(location.origin);
+        flash($("copyForChrome"), "Copied — now paste in Chrome");
+      } catch {
+        prompt("Copy this, then open it in Chrome:", location.origin);
+      }
+    });
+  }
+
+  // Chrome fires this only when a genuine app install is possible.
+  let installEvent = null;
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    installEvent = e;
+    if (!standalone) $("installBtn").hidden = false;
+  });
+
+  $("installBtn").addEventListener("click", async () => {
+    if (!installEvent) return;
+    installEvent.prompt();
+    const { outcome } = await installEvent.userChoice;
+    installEvent = null;
+    if (outcome === "accepted") {
+      $("installBtn").hidden = true;
+    }
+  });
+
+  window.addEventListener("appinstalled", () => {
+    $("installBtn").hidden = true;
+    setStatus("Installed. Open it once from your home screen, then it appears in your share menu.", false);
+  });
+
+  // ── self-diagnosis ────────────────────────────────────────────
+  $("checkBtn").addEventListener("click", async () => {
+    const box = $("checks");
+    if (!box.hidden) { box.hidden = true; return; }
+    box.hidden = false;
+    box.innerHTML = "<div>Checking…</div>";
+
+    const rows = [];
+    const add = (ok, label) => rows.push({ ok, label });
+
+    add(window.isSecureContext, "Secure connection");
+    add(!inAppBrowser, inAppBrowser ? "Opened inside another app's browser" : "Opened in a real browser");
+    add(/Chrome|Chromium/i.test(ua) && !/OPR|Firefox|SamsungBrowser/i.test(ua),
+        "Using Chrome");
+    add("serviceWorker" in navigator && !!(await navigator.serviceWorker.getRegistration()),
+        "Background service running");
+
+    let manifestOk = false;
+    try {
+      const r = await fetch("/manifest.json", { cache: "no-store" });
+      const m = await r.json();
+      manifestOk = !!(m.share_target && m.share_target.action);
+    } catch { /* offline */ }
+    add(manifestOk, "Share-menu setting present");
+    add(standalone, standalone ? "Running as an installed app" : "Not opened as an installed app");
+
+    box.innerHTML = rows
+      .map((r) => `<div class="${r.ok ? "ok" : "no"}"><b>${r.ok ? "OK" : "NO"}</b><span>${r.label}</span></div>`)
+      .join("");
+
+    // Say what to actually do about it.
+    let advice = "";
+    if (inAppBrowser) {
+      advice = "You opened this by tapping a link inside another app (WhatsApp, Instagram and so on), which uses its own mini browser. Copy the address, open Chrome, paste it there, then install.";
+    } else if (!/Chrome|Chromium/i.test(ua) || /OPR|Firefox|SamsungBrowser/i.test(ua)) {
+      advice = "Only Chrome on Android can add an app to the share menu. Open this address in Chrome.";
+    } else if (!standalone) {
+      advice = "Tap the Install button above, or Chrome's ⋮ menu and choose Install app. If it only offers 'Add to Home screen', that makes a bookmark with no share menu entry — reload the page and try again.";
+    } else if (!manifestOk) {
+      advice = "The app couldn't read its settings. Reload the page while online, then reinstall.";
+    } else {
+      advice = "All good. If it's still missing, uninstall the icon, reload this page in Chrome, and install again.";
+    }
+    const note = document.createElement("span");
+    note.className = "fixit";
+    note.textContent = advice;
+    box.appendChild(note);
+  });
+
   // ── install as an app ─────────────────────────────────────────
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () =>

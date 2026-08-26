@@ -31,6 +31,16 @@
     <p class="standfirst">Paste any link. Get a PDF you can print, keep or send.</p>
   </header>
 
+  <div class="alert" id="browserAlert" hidden>
+    <p class="alert-head">Open this in Chrome first</p>
+    <p class="alert-body">You opened this from inside another app's browser. It can't install properly from here, so it won't appear in your share menu. Copy the address and open it in Chrome.</p>
+    <button class="alert-btn" id="copyForChrome">Copy link</button>
+  </div>
+
+  <button class="install" id="installBtn" hidden>
+    Install app <span>— puts it in your share menu</span>
+  </button>
+
   <!-- ── FORM ────────────────────────────────────────────────── -->
   <section class="panel" id="formPanel">
     <div class="field">
@@ -88,6 +98,8 @@
 
   <footer class="colophon">
     <span>Some pages can't be captured — anything behind a login or a hard paywall.</span>
+    <button class="checklink" id="checkBtn">Not in your share menu? Check setup</button>
+    <div class="checks" id="checks" hidden></div>
   </footer>
 </main>
 

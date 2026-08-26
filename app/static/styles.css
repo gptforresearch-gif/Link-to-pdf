@@ -184,6 +184,48 @@ input#url:focus{outline:2px solid var(--cyan);outline-offset:-1px;background:#ff
   font-family:var(--mono);font-size:10.5px;line-height:1.6;color:var(--muted);
 }
 
+/* ── install helpers ────────────────────────────────────────── */
+.alert{
+  margin-top:22px;border:1px solid var(--magenta);
+  border-left-width:4px;padding:14px 15px;
+}
+.alert-head{
+  font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--magenta);margin:0 0 6px;
+}
+.alert-body{font-size:13.5px;line-height:1.5;color:var(--ink);margin:0 0 12px}
+.alert-btn{
+  font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.1em;
+  text-transform:uppercase;background:var(--magenta);color:#fff;
+  border:0;padding:11px 16px;cursor:pointer;
+}
+
+.install{
+  width:100%;margin-top:22px;padding:15px 12px;cursor:pointer;
+  font-family:var(--sans);font-size:15px;font-weight:700;
+  background:var(--cyan);color:#fff;border:1px solid var(--cyan);
+}
+.install span{font-weight:400;font-size:13px;opacity:.9;display:block;margin-top:3px}
+.install:hover{background:#00758f;border-color:#00758f}
+
+.checklink{
+  display:block;margin-top:10px;padding:4px 0;cursor:pointer;
+  background:transparent;border:0;text-align:left;
+  font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--cyan);
+  border-bottom:1px solid var(--rule);
+}
+.checks{margin-top:12px;font-family:var(--mono);font-size:11px;line-height:1.75}
+.checks div{display:flex;gap:8px;align-items:baseline}
+.checks b{font-weight:600;flex:0 0 auto}
+.checks .ok b{color:var(--cyan)}
+.checks .no b{color:var(--magenta)}
+.checks .fixit{
+  margin-top:10px;padding:10px 12px;background:#f5f7f8;
+  border-left:3px solid var(--magenta);color:var(--ink);
+  font-size:11.5px;line-height:1.6;display:block;
+}
+
 @media (prefers-reduced-motion:reduce){
   *{transition:none!important;animation:none!important}
 }
