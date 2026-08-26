@@ -5,4 +5,4 @@ trafilatura==2.0.0
 pydantic==2.10.4
 python-multipart==0.0.20
 pypdf==5.9.0
-cryptography==44.0.0
+cryptography==46.0.6

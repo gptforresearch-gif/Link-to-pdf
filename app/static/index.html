@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Link to PDF — paste a link, print the page</title>
+<meta name="description" content="Turn any web link or typed text into a PDF you can print, save or send.">
+<meta name="theme-color" content="#e9ecef" id="themeColor">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+<script>
+  // Set the theme before first paint so there's no flash of the wrong colours.
+  (function () {
+    try {
+      var saved = localStorage.getItem("linkpdf-theme");
+      var dark = saved ? saved === "dark"
+        : window.matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+    } catch (e) { document.documentElement.dataset.theme = "light"; }
+  })();
+</script>
+</head>
+<body>
+
+<main class="sheet" id="sheet">
+  <span class="mark tl" aria-hidden="true"></span>
+  <span class="mark tr" aria-hidden="true"></span>
+  <span class="mark bl" aria-hidden="true"></span>
+  <span class="mark br" aria-hidden="true"></span>
+
+  <header class="masthead">
+    <div class="inkbar" id="inkbar" aria-hidden="true">
+      <i data-ink="c"></i><i data-ink="m"></i><i data-ink="y"></i><i data-ink="k"></i>
+    </div>
+
+    <div class="toprow">
+      <p class="eyebrow">Web page in · paper out</p>
+      <div class="tools">
+        <button class="tool" id="historyBtn" aria-label="History" title="History">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5l4 2"/><circle cx="12" cy="12" r="9"/></svg>
+          <span class="badge" id="histCount" hidden>0</span>
+        </button>
+        <button class="tool" id="themeBtn" aria-label="Switch between dark and light" title="Dark / light">
+          <svg viewBox="0 0 24 24" aria-hidden="true" class="ico-moon"><path d="M20 14.5A8.5 8.5 0 019.5 4a8.5 8.5 0 1010.5 10.5z"/></svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true" class="ico-sun"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <h1 class="wordmark">Link<span class="arrow">→</span>PDF</h1>
+    <p class="standfirst">A web link or your own text. Out comes a PDF you can print, keep or send.</p>
+  </header>
+
+  <div class="alert" id="browserAlert" hidden>
+    <p class="alert-head">Open this in Chrome first</p>
+    <p class="alert-body">You opened this from inside another app's browser. It can't install properly from here, so it won't appear in your share menu. Copy the address and open it in Chrome.</p>
+    <button class="alert-btn" id="copyForChrome">Copy link</button>
+  </div>
+
+  <button class="install" id="installBtn" hidden>
+    Install app <span>— puts it in your share menu</span>
+  </button>
+
+  <!-- ── HISTORY ─────────────────────────────────────────────── -->
+  <section class="panel" id="historyPanel" hidden>
+    <div class="panel-head">
+      <span class="label">Saved on this device</span>
+      <button class="closex" id="histClose" aria-label="Close history">Close</button>
+    </div>
+    <div id="histList"></div>
+    <p class="hint" id="histEmpty" hidden>Nothing saved yet. PDFs you make are kept here on your phone, so they survive the server restarting.</p>
+    <div class="tail" id="histTools" hidden>
+      <button class="again" id="histExport">Export the list</button>
+      <button class="again" id="histClear">Delete everything</button>
+    </div>
+  </section>
+
+  <!-- ── FORM ────────────────────────────────────────────────── -->
+  <section class="panel" id="formPanel">
+    <div class="seg tabs" role="tablist" aria-label="What to convert">
+      <button role="tab" aria-selected="true" data-tab="link" class="on">A link</button>
+      <button role="tab" aria-selected="false" data-tab="text">Typed text</button>
+    </div>
+
+    <div id="linkTab">
+      <div class="field">
+        <label class="label" for="url">The link</label>
+        <input id="url" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+               placeholder="https://" enterkeyhint="go">
+        <button class="paste" id="pasteBtn" type="button">Paste</button>
+      </div>
+
+      <div class="field">
+        <span class="label">Style</span>
+        <div class="seg" role="radiogroup" aria-label="Style">
+          <button role="radio" aria-checked="true" data-mode="exact" class="on">Exact copy</button>
+          <button role="radio" aria-checked="false" data-mode="reader">Reading version</button>
+        </div>
+        <p class="hint" id="modeHint">Looks just like the page on screen — pictures, colours and all.</p>
+      </div>
+    </div>
+
+    <div id="textTab" hidden>
+      <div class="field">
+        <label class="label" for="docTitle">Title <span class="opt">optional</span></label>
+        <input id="docTitle" type="text" autocomplete="off" placeholder="Notes from the site visit">
+      </div>
+      <div class="field">
+        <label class="label" for="bodyText">Your text</label>
+        <textarea id="bodyText" rows="9" placeholder="Type or paste anything here.&#10;&#10;Leave a blank line to start a new paragraph."></textarea>
+        <p class="hint" id="charCount">0 characters</p>
+      </div>
+    </div>
+
+    <div class="field">
+      <span class="label">Paper</span>
+      <div class="seg thirds" role="radiogroup" aria-label="Paper size">
+        <button role="radio" aria-checked="true" data-size="A4" class="on">A4</button>
+        <button role="radio" aria-checked="false" data-size="Letter">Letter</button>
+        <button role="radio" aria-checked="false" data-size="Legal">Legal</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label class="label" for="pw">Password <span class="opt">optional</span></label>
+      <input id="pw" type="password" autocomplete="new-password" placeholder="Leave empty for no password">
+      <button class="paste" id="pwShow" type="button">Show</button>
+      <p class="hint">Anyone opening the PDF will have to type this. It can't be recovered if you forget it.</p>
+    </div>
+
+    <button class="go" id="goBtn" type="button">Make PDF</button>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+  </section>
+
+  <!-- ── RESULT ──────────────────────────────────────────────── -->
+  <section class="panel result" id="resultPanel" hidden>
+    <div class="reg" aria-hidden="true">
+      <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="11"/><circle cx="20" cy="20" r="4.5"/>
+      <line x1="20" y1="0" x2="20" y2="40"/><line x1="0" y1="20" x2="40" y2="20"/></svg>
+    </div>
+    <p class="label">Ready <span class="lock" id="lockTag" hidden>· password set</span></p>
+    <p class="filename" id="fileName">page.pdf</p>
+    <p class="specs" id="fileSpecs"></p>
+    <p class="note" id="fileNote" hidden></p>
+
+    <button class="go share" id="shareBtn">Share or print…</button>
+    <p class="hint sharehint">Opens your phone's share menu — Epson iPrint, WhatsApp, Gmail, Drive, whatever you have.</p>
+
+    <div class="actions">
+      <button id="waBtn" class="act">WhatsApp</button>
+      <button id="mailBtn" class="act">Email</button>
+      <button id="downloadBtn" class="act primary">Download</button>
+      <button id="printBtn" class="act">Open / print</button>
+    </div>
+    <p class="hint">WhatsApp and Email send a link to the file. Use Share to send the PDF itself.</p>
+
+    <p class="expiry">The link works for about a day. The PDF itself is saved on this device under History.</p>
+    <div class="tail">
+      <button class="again" id="redoBtn">Redo as reading version</button>
+      <button class="again" id="againBtn">Make another</button>
+    </div>
+  </section>
+
+  <footer class="colophon">
+    <span>Some pages can't be captured — anything behind a login or a hard paywall.</span>
+    <button class="checklink" id="checkBtn">Not in your share menu? Check setup</button>
+    <div class="checks" id="checks" hidden></div>
+  </footer>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
