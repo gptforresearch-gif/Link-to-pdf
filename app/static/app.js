@@ -112,9 +112,10 @@
       const el = document.createElement("div");
       el.className = "hrow";
       const kb = r.blob ? Math.round(r.blob.size / 1024) : 0;
-      const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text" }[r.style] || r.style;
+      const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited" }[r.style] || r.style;
       el.innerHTML =
-        `<p class="htitle"></p>
+        `<div class="hpick"><input type="checkbox" id="pick-${r.key}"><label for="pick-${r.key}">Select</label></div>
+         <p class="htitle"></p>
          <p class="hmeta"></p>
          <div class="hacts">
            <button data-a="share">Share</button>
@@ -130,8 +131,74 @@
         const b = e.target.closest("button"); if (!b) return;
         histAction(b.dataset.a, r, b);
       });
+      el.querySelector(".hpick input").addEventListener("change", paintMerge);
       list.appendChild(el);
     });
+    paintMerge();
+  }
+
+  function picked() {
+    return [...document.querySelectorAll(".hpick input:checked")]
+      .map((c) => c.id.replace("pick-", ""));
+  }
+  function paintMerge() {
+    const n = picked().length;
+    const b = $("mergeBtn");
+    b.hidden = n < 2;
+    b.textContent = `Merge ${n} PDFs into one`;
+  }
+
+  /* ── merging ───────────────────────────────────────────────── */
+  $("mergeBtn").addEventListener("click", async () => {
+    const keys = picked();
+    if (keys.length < 2) return;
+    const btn = $("mergeBtn");
+    btn.disabled = true; btn.textContent = "Merging…";
+    try {
+      const { PDFDocument } = await loadPdfLib();
+      const all = await histAll();
+      const chosen = keys.map((k) => all.find((r) => r.key === k)).filter(Boolean);
+      if (chosen.some((r) => r.locked)) {
+        throw new Error("Password-protected PDFs can't be merged. Unlock or remake them first.");
+      }
+      const out = await PDFDocument.create();
+      for (const rec of chosen) {
+        const src = await PDFDocument.load(await rec.blob.arrayBuffer());
+        const pages = await out.copyPages(src, src.getPageIndices());
+        pages.forEach((pg) => out.addPage(pg));
+      }
+      const bytes = await out.save();
+      const blob = new Blob([bytes], { type: "application/pdf" });
+      await finishLocal(blob, "merged.pdf", `${chosen.length} PDFs merged`, "merged");
+    } catch (err) {
+      setStatus((err && err.message) || "Couldn't merge those.", true);
+      historyPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } finally {
+      btn.disabled = false; paintMerge();
+    }
+  });
+
+  /* ── a PDF made on this device (merged or edited) ──────────── */
+  async function finishLocal(blob, filename, title, style) {
+    const id = "local-" + Date.now().toString(36);
+    const pages = await countPages(blob);
+    current = {
+      id, filename, title, source: "this device", pages,
+      kb: Math.round(blob.size / 1024), style, locked: false,
+      note: "Made on this device. Share and Download use this file; it has no web link.",
+      view: null, download: null, localOnly: true,
+    };
+    blobCache = blob;
+    await histSave({ ...current, sourceUrl: "", paper: size }, blob);
+    await histRender();
+    showResult(current);
+  }
+
+  async function countPages(blob) {
+    try {
+      const { PDFDocument } = await loadPdfLib();
+      return (await PDFDocument.load(await blob.arrayBuffer())).getPageCount();
+    } catch { return "?"; }
   }
 
   function escapeHtml(s) {
@@ -184,6 +251,25 @@
     ).join("\n");
     saveBlob(new Blob([text || "empty"], { type: "text/plain" }), "link-to-pdf-history.txt");
   });
+
+  /* ── PDF libraries, loaded only when first needed ──────────── */
+  let pdfLibP = null, pdfJsP = null;
+  function loadPdfLib() {
+    if (!pdfLibP) pdfLibP = new Promise((res, rej) => {
+      const t = document.createElement("script");
+      t.src = "/vendor/pdf-lib.min.js";
+      t.onload = () => res(window.PDFLib); t.onerror = () => rej(new Error("lib"));
+      document.head.appendChild(t);
+    });
+    return pdfLibP;
+  }
+  function loadPdfJs() {
+    if (!pdfJsP) pdfJsP = import("/vendor/pdf.min.mjs").then((m) => {
+      m.GlobalWorkerOptions.workerSrc = "/vendor/pdf.worker.min.mjs";
+      return m;
+    });
+    return pdfJsP;
+  }
 
   /* ── preferences ───────────────────────────────────────────── */
   function loadPrefs() {
@@ -290,7 +376,7 @@
       const text = $("bodyText").value;
       if (!text.trim()) { setStatus("Type or paste some text first.", true); $("bodyText").focus(); return; }
       endpoint = "/api/text";
-      payload = { text, title: $("docTitle").value, size, password };
+      payload = { text, size, password };
     } else {
       const url = urlInput.value.trim();
       if (!url) { setStatus("Paste a link first.", true); urlInput.focus(); return; }
@@ -300,6 +386,8 @@
     }
 
     goBtn.disabled = true; goBtn.textContent = "Working…"; startPress();
+    // If nothing has come back quickly, the server is almost certainly asleep.
+    const wakeTimer = setTimeout(() => { $("waking").hidden = false; }, 4000);
     try {
       const res = await fetch(endpoint, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -324,12 +412,14 @@
         ? "Couldn't reach the server. Check your connection, or it may still be waking up — try again in a moment."
         : (err && err.message) || "Something went wrong. Try again.", true);
     } finally {
+      clearTimeout(wakeTimer); $("waking").hidden = true;
       stopPress(); goBtn.disabled = false; goBtn.textContent = "Make PDF";
+      paintOnline();
     }
   }
 
   function showResult(d) {
-    const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text" }[d.style] || "";
+    const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited" }[d.style] || "";
     $("fileName").textContent = d.filename;
     $("fileSpecs").textContent = `${d.pages} page${d.pages === 1 ? "" : "s"} · ${d.kb} KB · ${size} · ${styleName}`;
     const note = $("fileNote"); note.hidden = !d.note; note.textContent = d.note || "";
@@ -337,14 +427,18 @@
     formPanel.hidden = true; historyPanel.hidden = true; resultPanel.hidden = false;
     setStatus("", false);
     resultPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    $("redoBtn").hidden = d.style === "text";
+    const local = !!d.localOnly;
+    $("waBtn").hidden = local; $("mailBtn").hidden = local;
+    $("printBtn").hidden = local;
+    $("expiryLine") && ($("expiryLine").hidden = local);
+    $("redoBtn").hidden = local || d.style === "text" || d.style === "merged" || d.style === "edited";
     $("redoBtn").textContent = d.style === "exact" ? "Redo as reading version" : "Redo as exact copy";
   }
 
   function reset() {
     resultPanel.hidden = true; formPanel.hidden = false;
     current = null; blobCache = null;
-    urlInput.value = ""; $("bodyText").value = ""; $("docTitle").value = "";
+    urlInput.value = ""; $("bodyText").value = "";
     // A new document is a new decision: never carry a password over silently.
     $("pw").value = ""; $("pw").type = "password"; $("pwShow").textContent = "Show";
     $("charCount").textContent = "0 characters";
@@ -360,6 +454,7 @@
 
   async function getBlob() {
     if (blobCache) return blobCache;
+    if (!current || !current.view) throw new Error("That file isn't available any more.");
     const r = await fetch(current.view);
     if (!r.ok) throw new Error("The file is no longer on the server.");
     blobCache = await r.blob();
@@ -397,6 +492,7 @@
   $("downloadBtn").addEventListener("click", async () => {
     try { saveBlob(await getBlob(), current.filename); flash($("downloadBtn"), "Saved"); }
     catch {
+      if (!current.download) { setStatus("That file is no longer available.", true); return; }
       const a = document.createElement("a");
       a.href = current.download; a.download = current.filename;
       document.body.appendChild(a); a.click(); a.remove();
@@ -427,6 +523,102 @@
     make();
   });
 
+  /* ── page editor ───────────────────────────────────────────── */
+  let editState = null;   // [{ index, rotate, cut }]
+
+  $("editBtn").addEventListener("click", async () => {
+    let blob;
+    try { blob = await getBlob(); }
+    catch { setStatus("That file is no longer available to edit.", true); return; }
+
+    $("editBtn").disabled = true; $("editBtn").textContent = "Loading…";
+    try {
+      const pdfjs = await loadPdfJs();
+      const doc = await pdfjs.getDocument({ data: await blob.arrayBuffer() }).promise;
+      editState = Array.from({ length: doc.numPages }, (_, i) => ({ index: i, rotate: 0, cut: false }));
+      resultPanel.hidden = true; $("editorPanel").hidden = false;
+      await drawPages(doc);
+      $("editorPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch {
+      setStatus("Couldn't open that PDF for editing. Password-protected files can't be edited.", true);
+    } finally {
+      $("editBtn").disabled = false; $("editBtn").textContent = "Edit pages";
+    }
+  });
+
+  async function drawPages(doc) {
+    const host = $("pageList");
+    host.innerHTML = "";
+    for (let i = 0; i < editState.length; i++) {
+      const st = editState[i];
+      const cell = document.createElement("div");
+      cell.className = "pg" + (st.cut ? " cut" : "");
+      const canvas = document.createElement("canvas");
+      cell.appendChild(canvas);
+      const num = document.createElement("p");
+      num.className = "n"; num.textContent = `${i + 1} of ${editState.length}`;
+      cell.appendChild(num);
+      const ops = document.createElement("div");
+      ops.className = "ops";
+      ops.innerHTML = `<button data-o="up" title="Move earlier">↑</button>
+                       <button data-o="rot" title="Rotate">⟳</button>
+                       <button data-o="down" title="Move later">↓</button>
+                       <button data-o="cut" class="x" title="Remove">✕</button>`;
+      cell.appendChild(ops);
+      host.appendChild(cell);
+
+      const page = await doc.getPage(st.index + 1);
+      const base = page.getViewport({ scale: 1 });
+      const vp = page.getViewport({ scale: 150 / base.width, rotation: (base.rotation + st.rotate) % 360 });
+      canvas.width = vp.width; canvas.height = vp.height;
+      await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+
+      ops.addEventListener("click", async (e) => {
+        const op = e.target.closest("button")?.dataset.o;
+        if (!op) return;
+        if (op === "rot") st.rotate = (st.rotate + 90) % 360;
+        if (op === "cut") st.cut = !st.cut;
+        if (op === "up" && i > 0) [editState[i - 1], editState[i]] = [editState[i], editState[i - 1]];
+        if (op === "down" && i < editState.length - 1) [editState[i + 1], editState[i]] = [editState[i], editState[i + 1]];
+        await drawPages(doc);
+        const kept = editState.filter((x) => !x.cut).length;
+        $("editHint").textContent = kept === 0
+          ? "Every page is marked for removal — keep at least one."
+          : `${kept} page${kept === 1 ? "" : "s"} will be kept. Nothing changes until you tap Save.`;
+      });
+    }
+  }
+
+  $("editClose").addEventListener("click", () => {
+    $("editorPanel").hidden = true; resultPanel.hidden = false; editState = null;
+  });
+
+  $("editSave").addEventListener("click", async () => {
+    const keep = editState.filter((p) => !p.cut);
+    if (!keep.length) { $("editHint").textContent = "Keep at least one page."; return; }
+    const btn = $("editSave");
+    btn.disabled = true; btn.textContent = "Saving…";
+    try {
+      const { PDFDocument, degrees } = await loadPdfLib();
+      const src = await PDFDocument.load(await (await getBlob()).arrayBuffer());
+      const out = await PDFDocument.create();
+      const copied = await out.copyPages(src, keep.map((p) => p.index));
+      copied.forEach((pg, i) => {
+        if (keep[i].rotate) pg.setRotation(degrees((pg.getRotation().angle + keep[i].rotate) % 360));
+        out.addPage(pg);
+      });
+      const blob = new Blob([await out.save()], { type: "application/pdf" });
+      const name = (current.filename || "document.pdf").replace(/\.pdf$/i, "") + "-edited.pdf";
+      $("editorPanel").hidden = true;
+      editState = null;
+      await finishLocal(blob, name, (current.title || "Document") + " (edited)", "edited");
+    } catch (err) {
+      $("editHint").textContent = "Couldn't save those changes. " + ((err && err.message) || "");
+    } finally {
+      btn.disabled = false; btn.textContent = "Save as a new PDF";
+    }
+  });
+
   /* ── arriving from the Android share sheet ─────────────────── */
   function pickLink(...cands) {
     for (const c of cands) {
@@ -454,7 +646,6 @@
       });
       $("linkTab").hidden = true; $("textTab").hidden = false;
       $("bodyText").value = shared;
-      $("docTitle").value = q.get("title") || "";
       $("charCount").textContent = shared.length.toLocaleString() + " characters";
       setStatus("That share had no link in it, so it's ready as text instead.", false);
       return;
@@ -529,10 +720,27 @@
     box.appendChild(note);
   });
 
+  /* ── offline ───────────────────────────────────────────────── */
+  function paintOnline() {
+    const off = !navigator.onLine;
+    $("offlineAlert").hidden = !off;
+    goBtn.disabled = off;
+    goBtn.textContent = off ? "No connection" : "Make PDF";
+    if (off) setStatus("", false);
+  }
+  window.addEventListener("online", paintOnline);
+  window.addEventListener("offline", paintOnline);
+  $("offlineHistory").addEventListener("click", async () => {
+    historyPanel.hidden = false;
+    await histRender();
+    historyPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+
   /* ── start ─────────────────────────────────────────────────── */
   loadPrefs();
   paintChoices();
   histBadge();
+  paintOnline();
   handleShare();
 
   if ("serviceWorker" in navigator) {

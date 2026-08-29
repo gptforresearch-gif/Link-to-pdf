@@ -56,6 +56,12 @@
     <p class="standfirst">A web link or your own text. Out comes a PDF you can print, keep or send.</p>
   </header>
 
+  <div class="alert offline" id="offlineAlert" hidden>
+    <p class="alert-head">You're offline</p>
+    <p class="alert-body">New PDFs need an internet connection, but everything already saved on this device still opens, shares and prints.</p>
+    <button class="alert-btn" id="offlineHistory">Open saved PDFs</button>
+  </div>
+
   <div class="alert" id="browserAlert" hidden>
     <p class="alert-head">Open this in Chrome first</p>
     <p class="alert-body">You opened this from inside another app's browser. It can't install properly from here, so it won't appear in your share menu. Copy the address and open it in Chrome.</p>
@@ -74,6 +80,7 @@
     </div>
     <div id="histList"></div>
     <p class="hint" id="histEmpty" hidden>Nothing saved yet. PDFs you make are kept here on your phone, so they survive the server restarting.</p>
+    <button class="go merge" id="mergeBtn" hidden>Merge selected into one PDF</button>
     <div class="tail" id="histTools" hidden>
       <button class="again" id="histExport">Export the list</button>
       <button class="again" id="histClear">Delete everything</button>
@@ -107,10 +114,6 @@
 
     <div id="textTab" hidden>
       <div class="field">
-        <label class="label" for="docTitle">Title <span class="opt">optional</span></label>
-        <input id="docTitle" type="text" autocomplete="off" placeholder="Notes from the site visit">
-      </div>
-      <div class="field">
         <label class="label" for="bodyText">Your text</label>
         <textarea id="bodyText" rows="9" placeholder="Type or paste anything here.&#10;&#10;Leave a blank line to start a new paragraph."></textarea>
         <p class="hint" id="charCount">0 characters</p>
@@ -135,6 +138,12 @@
 
     <button class="go" id="goBtn" type="button">Make PDF</button>
     <p class="status" id="status" role="status" aria-live="polite"></p>
+
+    <div class="waking" id="waking" hidden>
+      <div class="press" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+      <p class="waking-head">Waking the server up</p>
+      <p class="waking-body">It sleeps when unused to stay free. This takes up to a minute, then it's quick again.</p>
+    </div>
   </section>
 
   <!-- ── RESULT ──────────────────────────────────────────────── -->
@@ -159,11 +168,22 @@
     </div>
     <p class="hint">WhatsApp and Email send a link to the file. Use Share to send the PDF itself.</p>
 
-    <p class="expiry">The link works for about a day. The PDF itself is saved on this device under History.</p>
+    <button class="act wide" id="editBtn">Edit pages</button>
+    <p class="expiry" id="expiryLine">The link works for about a day. The PDF itself is saved on this device under History.</p>
     <div class="tail">
       <button class="again" id="redoBtn">Redo as reading version</button>
       <button class="again" id="againBtn">Make another</button>
     </div>
+  </section>
+
+  <section class="panel" id="editorPanel" hidden>
+    <div class="panel-head">
+      <span class="label">Edit pages</span>
+      <button class="closex" id="editClose" aria-label="Close editor">Cancel</button>
+    </div>
+    <p class="hint" id="editHint">Rotate, delete or reorder. Nothing changes until you tap Save.</p>
+    <div class="pages" id="pageList"></div>
+    <button class="go" id="editSave">Save as a new PDF</button>
   </section>
 
   <footer class="colophon">
