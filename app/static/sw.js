@@ -1,4 +1,4 @@
-const SHELL = "linkpdf-v3";
+const SHELL = "linkpdf-v4";
 
 // Everything the app needs to open with no server at all.
 const FILES = [

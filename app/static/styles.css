@@ -264,3 +264,9 @@ input:focus,textarea:focus{outline:2px solid var(--cyan);outline-offset:-1px;bac
 .hpick{display:flex;align-items:center;gap:9px;margin-bottom:7px}
 .hpick input{width:17px;height:17px;accent-color:var(--magenta);flex:0 0 auto}
 .hpick label{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);cursor:pointer}
+
+.build{
+  display:inline-block;margin-left:6px;padding:2px 6px;
+  background:var(--magenta);color:#fff;border-radius:2px;
+  font-size:9px;letter-spacing:.1em;
+}
