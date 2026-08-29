@@ -270,3 +270,19 @@ input:focus,textarea:focus{outline:2px solid var(--cyan);outline-offset:-1px;bac
   background:var(--magenta);color:#fff;border-radius:2px;
   font-size:9px;letter-spacing:.1em;
 }
+
+/* ── file chooser ───────────────────────────────────────────── */
+.seg.tabs{grid-template-columns:1fr 1fr 1fr}
+.drop{
+  display:block;text-align:center;cursor:pointer;
+  border:1px dashed var(--rule);background:var(--well);
+  padding:26px 16px;transition:border-color .15s ease;
+}
+.drop:hover,.drop.over{border-color:var(--cyan);border-style:solid}
+.drop.has{border-style:solid;border-color:var(--ink)}
+.drop-icon svg{width:30px;height:30px;fill:none;stroke:var(--muted);stroke-width:1.5;
+  stroke-linecap:round;stroke-linejoin:round}
+.drop.has .drop-icon svg{stroke:var(--cyan)}
+.drop-main{display:block;margin-top:10px;font-size:14.5px;font-weight:600;color:var(--ink);word-break:break-all}
+.drop-sub{display:block;margin-top:4px;font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}

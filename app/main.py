@@ -13,8 +13,9 @@ from html import escape
 from pathlib import Path
 from urllib.parse import urlparse
 
+import mammoth
 import trafilatura
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
@@ -295,15 +296,19 @@ def text_to_html(text: str, title: str) -> str:
     )
 
 
-async def render_text_pdf(text: str, title: str, size: str) -> bytes:
-    """No web page involved, so this is cheap even on a small server."""
+async def render_html_pdf(html: str, size: str) -> bytes:
+    """Render ready-made HTML. No web page is fetched, so this is cheap."""
     browser = await get_browser()
     global _renders
     _renders += 1
     context = await browser.new_context(viewport={"width": 1000, "height": 800})
     try:
         page = await context.new_page()
-        await page.set_content(text_to_html(text, title), wait_until="load")
+        await page.set_content(html, wait_until="load")
+        try:
+            await page.wait_for_load_state("networkidle", timeout=4000)
+        except Exception:
+            pass
         return await page.pdf(
             format=PAGE_SIZES.get(size, "A4"),
             print_background=True,
@@ -318,6 +323,10 @@ async def render_text_pdf(text: str, title: str, size: str) -> bytes:
         )
     finally:
         await context.close()
+
+
+async def render_text_pdf(text: str, title: str, size: str) -> bytes:
+    return await render_html_pdf(text_to_html(text, title), size)
 
 
 def _looks_like_index(html: str) -> bool:
@@ -700,6 +709,113 @@ async def api_make(req: MakeRequest):
             "download": f"/d/{file_id}",
         }
     )
+
+
+MAX_DOCX_BYTES = 12 * 1024 * 1024      # 12 MB: generous for text, keeps memory sane
+
+# Word styles the converter doesn't recognise on its own. Without these, a
+# document's own title and pull-quotes come out as ordinary body text.
+DOCX_STYLE_MAP = """
+p[style-name='Title'] => h1.doc-main:fresh
+p[style-name='Subtitle'] => p.doc-sub:fresh
+p[style-name='Quote'] => blockquote:fresh
+p[style-name='Intense Quote'] => blockquote:fresh
+p[style-name='Caption'] => p.doc-cap:fresh
+r[style-name='Strong'] => strong
+"""
+
+DOCX_EXTRA_CSS = (
+    "<style>"
+    ".doc-sub{color:#5b6672;font-size:12pt;margin:-4pt 0 14pt;font-style:italic}"
+    ".doc-cap{color:#5b6672;font-size:9pt;margin-top:-6pt}"
+    "</style>"
+)
+
+
+@app.post("/api/docx")
+async def api_docx(
+    file: UploadFile = File(...),
+    size: str = Form("A4"),
+    password: str = Form(""),
+):
+    name = (file.filename or "").lower()
+    if name.endswith(".doc"):
+        raise HTTPException(
+            400,
+            "That's an older .doc file. Open it in Word and use Save As to make a .docx, then try again.",
+        )
+    if not name.endswith(".docx"):
+        raise HTTPException(400, "That isn't a Word document. Choose a file ending in .docx.")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "That file is empty.")
+    if len(data) > MAX_DOCX_BYTES:
+        raise HTTPException(400, "That document is too big. The limit is 12 MB.")
+    # A .docx is a zip; anything else here is mislabelled or corrupt.
+    if not data.startswith(b"PK"):
+        raise HTTPException(400, "That file isn't a real Word document, or it's damaged.")
+
+    try:
+        result = mammoth.convert_to_html(io.BytesIO(data), style_map=DOCX_STYLE_MAP)
+        body = result.value or ""
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "Couldn't read that Word document. It may be damaged or password-protected.")
+
+    if not body.strip():
+        raise HTTPException(400, "That document appears to be empty.")
+
+    # If the document carries its own title, use it and take it out of the body
+    # so the heading isn't printed twice.
+    title = re.sub(r"\.docx$", "", file.filename or "Document", flags=re.I)
+    own = re.search(r'<h1 class="doc-main">(.*?)</h1>', body, re.S | re.I)
+    if own:
+        plain = re.sub(r"<[^>]+>", "", own.group(1)).strip()
+        if plain:
+            title = plain
+        body = body[: own.start()] + body[own.end():]
+    # Reuse the reading-mode stylesheet so it prints like everything else.
+    doc = READER_TEMPLATE.format(
+        base="about:blank",
+        title=escape(title),
+        source="word document",
+        date=time.strftime("%d %b %Y"),
+        body=DOCX_EXTRA_CSS + body,
+    )
+
+    paper = size if size in PAGE_SIZES else "A4"
+    pw = _clean_password(password)
+
+    sweep_old_files()
+    async with _lock:
+        try:
+            pdf = await asyncio.wait_for(render_html_pdf(doc, paper), timeout=45)
+        except asyncio.TimeoutError:
+            raise HTTPException(504, "That document took too long. Try a shorter one.")
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001
+            raise HTTPException(500, "Couldn't turn that document into a PDF.")
+
+    pages = count_pdf_pages(pdf)
+    if pw:
+        pdf = encrypt_pdf(pdf, pw)
+
+    filename = safe_filename(title, "https://word.doc")
+    file_id = _store(pdf, filename)
+    return JSONResponse({
+        "id": file_id,
+        "filename": filename,
+        "title": title,
+        "source": "word document",
+        "pages": pages,
+        "kb": round(len(pdf) / 1024),
+        "style": "docx",
+        "locked": bool(pw),
+        "note": None,
+        "view": f"/f/{file_id}",
+        "download": f"/d/{file_id}",
+    })
 
 
 def _lookup(file_id: str) -> tuple[Path, str]:

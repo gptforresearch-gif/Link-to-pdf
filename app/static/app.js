@@ -112,7 +112,7 @@
       const el = document.createElement("div");
       el.className = "hrow";
       const kb = r.blob ? Math.round(r.blob.size / 1024) : 0;
-      const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited" }[r.style] || r.style;
+      const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited", docx: "Word document" }[r.style] || r.style;
       el.innerHTML =
         `<div class="hpick"><input type="checkbox" id="pick-${r.key}"><label for="pick-${r.key}">Select</label></div>
          <p class="htitle"></p>
@@ -307,6 +307,7 @@
         tab = btn.dataset.tab;
         $("linkTab").hidden = tab !== "link";
         $("textTab").hidden = tab !== "text";
+        $("docxTab").hidden = tab !== "docx";
       }
       if (btn.dataset.mode) { mode = btn.dataset.mode; modeHint.textContent = HINTS[mode]; savePrefs(); }
       if (btn.dataset.size) { size = btn.dataset.size; savePrefs(); }
@@ -353,11 +354,11 @@
   const STAGES = ["Opening the page…", "Loading pictures…", "Laying out the paper…", "Printing to PDF…"];
   function startPress() {
     const inks = [...inkbar.querySelectorAll("i")]; let i = 0;
-    setStatus(tab === "text" ? "Setting the type…" : STAGES[0], false);
+    setStatus(tab === "link" ? STAGES[0] : (tab === "docx" ? "Reading the document…" : "Setting the type…"), false);
     inkbar.classList.add("pressing"); inks[0].classList.add("wet");
     inkTimer = setInterval(() => {
       i += 1;
-      if (i < inks.length) { inks[i].classList.add("wet"); if (tab !== "text") setStatus(STAGES[i], false); }
+      if (i < inks.length) { inks[i].classList.add("wet"); if (tab === "link") setStatus(STAGES[i], false); }
       else if (i === inks.length + 3) setStatus("Still going — a slow page, or the server waking up.", false);
     }, 2600);
   }
@@ -370,14 +371,29 @@
   /* ── make ──────────────────────────────────────────────────── */
   async function make() {
     const password = $("pw").value;
-    let endpoint, payload;
+    let endpoint, payload, form = null;
 
-    if (tab === "text") {
+    if (tab === "docx") {
+      if (!docxFile) { setStatus("Choose a Word document first.", true); return; }
+      if (!/\.docx$/i.test(docxFile.name)) {
+        setStatus(/\.doc$/i.test(docxFile.name)
+          ? "That's an older .doc file. Open it in Word, use Save As, and choose .docx."
+          : "That isn't a Word document. Choose a file ending in .docx.", true);
+        return;
+      }
+      form = new FormData();
+      form.append("file", docxFile);
+      form.append("size", size);
+      form.append("password", password || "");
+      endpoint = "/api/docx";
+    }
+
+    if (tab === "text" && !form) {
       const text = $("bodyText").value;
       if (!text.trim()) { setStatus("Type or paste some text first.", true); $("bodyText").focus(); return; }
       endpoint = "/api/text";
       payload = { text, size, password };
-    } else {
+    } else if (!form) {
       const url = urlInput.value.trim();
       if (!url) { setStatus("Paste a link first.", true); urlInput.focus(); return; }
       lastUrl = url;
@@ -389,10 +405,12 @@
     // If nothing has come back quickly, the server is almost certainly asleep.
     const wakeTimer = setTimeout(() => { $("waking").hidden = false; }, 4000);
     try {
-      const res = await fetch(endpoint, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      const res = form
+        ? await fetch(endpoint, { method: "POST", body: form })
+        : await fetch(endpoint, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
       const raw = await res.text();
       let data = null;
       if (raw) { try { data = JSON.parse(raw); } catch {} }
@@ -419,7 +437,7 @@
   }
 
   function showResult(d) {
-    const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited" }[d.style] || "";
+    const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited", docx: "Word document" }[d.style] || "";
     $("fileName").textContent = d.filename;
     $("fileSpecs").textContent = `${d.pages} page${d.pages === 1 ? "" : "s"} · ${d.kb} KB · ${size} · ${styleName}`;
     const note = $("fileNote"); note.hidden = !d.note; note.textContent = d.note || "";
@@ -439,6 +457,7 @@
     resultPanel.hidden = true; formPanel.hidden = false;
     current = null; blobCache = null;
     urlInput.value = ""; $("bodyText").value = "";
+    fileInput.value = ""; showFile(null);
     // A new document is a new decision: never carry a password over silently.
     $("pw").value = ""; $("pw").type = "password"; $("pwShow").textContent = "Show";
     $("charCount").textContent = "0 characters";
@@ -718,6 +737,37 @@
     const note = document.createElement("span");
     note.className = "fixit"; note.textContent = advice;
     box.appendChild(note);
+  });
+
+  /* ── Word file picking ─────────────────────────────────────── */
+  let docxFile = null;
+  const drop = $("drop"), fileInput = $("docxFile");
+
+  function showFile(f) {
+    docxFile = f || null;
+    setStatus("", false);   // a new choice clears any previous complaint
+    if (!f) {
+      drop.classList.remove("has");
+      $("dropMain").textContent = "Choose a .docx file";
+      $("dropSub").textContent = "Or drag one here";
+      return;
+    }
+    drop.classList.add("has");
+    $("dropMain").textContent = f.name;
+    $("dropSub").textContent = (f.size / 1024 < 1024)
+      ? Math.round(f.size / 1024) + " KB — tap Make PDF"
+      : (f.size / 1048576).toFixed(1) + " MB — tap Make PDF";
+  }
+
+  fileInput.addEventListener("change", (e) => showFile(e.target.files[0]));
+
+  ["dragenter", "dragover"].forEach((ev) =>
+    drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) =>
+    drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", (e) => {
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) showFile(f);
   });
 
   /* ── offline ───────────────────────────────────────────────── */

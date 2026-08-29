@@ -39,7 +39,7 @@
     </div>
 
     <div class="toprow">
-      <p class="eyebrow">Web page in · paper out <span class="build">Build 4</span></p>
+      <p class="eyebrow">Web page in · paper out <span class="build">Build 5</span></p>
       <div class="tools">
         <button class="tool" id="historyBtn" aria-label="History" title="History">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5l4 2"/><circle cx="12" cy="12" r="9"/></svg>
@@ -92,6 +92,7 @@
     <div class="seg tabs" role="tablist" aria-label="What to convert">
       <button role="tab" aria-selected="true" data-tab="link" class="on">A link</button>
       <button role="tab" aria-selected="false" data-tab="text">Typed text</button>
+      <button role="tab" aria-selected="false" data-tab="docx">Word file</button>
     </div>
 
     <div id="linkTab">
@@ -117,6 +118,21 @@
         <label class="label" for="bodyText">Your text</label>
         <textarea id="bodyText" rows="9" placeholder="Type or paste anything here.&#10;&#10;Leave a blank line to start a new paragraph."></textarea>
         <p class="hint" id="charCount">0 characters</p>
+      </div>
+    </div>
+
+    <div id="docxTab" hidden>
+      <div class="field">
+        <span class="label">Word document</span>
+        <label class="drop" id="drop" for="docxFile">
+          <span class="drop-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><path d="M13 2v7h7"/></svg>
+          </span>
+          <span class="drop-main" id="dropMain">Choose a .docx file</span>
+          <span class="drop-sub" id="dropSub">Or drag one here</span>
+        </label>
+        <input id="docxFile" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
+        <p class="hint">Headings, lists, tables, bold and italic, and pictures all carry over. Complex page layouts and columns won't match exactly. Older .doc files need saving as .docx first.</p>
       </div>
     </div>
 
