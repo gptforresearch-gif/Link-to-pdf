@@ -15,7 +15,9 @@ WORKDIR /srv
 RUN pip install --no-cache-dir playwright==1.49.1 \
  && playwright install --with-deps chromium \
  && apt-get update \
- && apt-get install -y --no-install-recommends fonts-indic fonts-noto-core \
+ && apt-get install -y --no-install-recommends \
+      fonts-indic fonts-noto-core \
+      tesseract-ocr tesseract-ocr-hin tesseract-ocr-guj \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 

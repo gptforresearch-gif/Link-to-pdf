@@ -39,7 +39,7 @@
     </div>
 
     <div class="toprow">
-      <p class="eyebrow">Web page in · paper out <span class="build">Build 7</span></p>
+      <p class="eyebrow">Web page in · paper out <span class="build">Build 8</span></p>
       <div class="tools">
         <button class="tool" id="historyBtn" aria-label="History" title="History">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5l4 2"/><circle cx="12" cy="12" r="9"/></svg>
@@ -94,6 +94,7 @@
       <button role="tab" aria-selected="false" data-tab="text">Typed text</button>
       <button role="tab" aria-selected="false" data-tab="docx">Word file</button>
       <button role="tab" aria-selected="false" data-tab="audio">Voice note</button>
+      <button role="tab" aria-selected="false" data-tab="scan">Photo / scan</button>
     </div>
 
     <div id="linkTab">
@@ -171,6 +172,39 @@
       <div class="alert" id="audioOff" hidden>
         <p class="alert-head">Not switched on yet</p>
         <p class="alert-body">Voice notes need an OpenRouter key set on the server. Everything else in the app works without it.</p>
+      </div>
+    </div>
+
+    <div id="scanTab" hidden>
+      <div class="field">
+        <span class="label">Photos of the document</span>
+        <label class="drop" id="sdrop" for="scanFiles">
+          <span class="drop-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M3 7h3l2-2h8l2 2h3v12H3z"/><circle cx="12" cy="13" r="3.6"/></svg>
+          </span>
+          <span class="drop-main" id="sdropMain">Take or choose photos</span>
+          <span class="drop-sub" id="sdropSub">Up to 5 pages at a time</span>
+        </label>
+        <input id="scanFiles" type="file" accept="image/*" capture="environment" multiple hidden>
+        <div id="scanList" class="scanlist"></div>
+      </div>
+
+      <div class="field">
+        <label class="label" for="scanLang">Language on the page</label>
+        <select id="scanLang">
+          <option value="eng">English</option>
+          <option value="hin">Hindi</option>
+          <option value="guj">Gujarati</option>
+          <option value="eng+hin">English and Hindi</option>
+          <option value="eng+guj">English and Gujarati</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label class="check"><input type="checkbox" id="searchable" checked>
+          <span><b>Make the text searchable</b>Reads the words so you can select and search them. Slower — roughly 15 seconds a page on the free server.</span></label>
+        <label class="check"><input type="checkbox" id="enhance" checked>
+          <span><b>Clean it up</b>Turns a phone photo into something closer to a proper scan.</span></label>
       </div>
     </div>
 

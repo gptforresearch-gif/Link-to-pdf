@@ -7,6 +7,8 @@ import asyncio
 import io
 import os
 import re
+import subprocess
+import tempfile
 import time
 import uuid
 from html import escape
@@ -15,6 +17,7 @@ from urllib.parse import urlparse
 
 import httpx
 import mammoth
+from PIL import Image, ImageFilter, ImageOps
 import trafilatura
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -966,6 +969,156 @@ async def api_audio(
         "locked": bool(pw),
         "note": (" · ".join(bits) + ".") if bits else None,
         "words": len(text.split()),
+        "view": f"/f/{file_id}",
+        "download": f"/d/{file_id}",
+    })
+
+
+# ----------------------------------------------------------------------------
+# Photographs of paper documents
+# ----------------------------------------------------------------------------
+
+MAX_SCAN_PAGES = 5                     # 0.1 CPU: more than this won't finish in time
+MAX_SCAN_BYTES = 12 * 1024 * 1024      # per photo
+SCAN_LONG_EDGE = 2000                  # OCR gains nothing above this, and costs time
+SCAN_BUDGET_S = 105
+
+SCAN_LANGS = {
+    "eng": "eng", "hin": "hin", "guj": "guj",
+    "eng+hin": "eng+hin", "eng+guj": "eng+guj",
+}
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif", ".gif", ".tif", ".tiff"}
+
+
+def prepare_scan(raw: bytes, enhance: bool) -> bytes:
+    """Straighten the orientation, optionally clean it up, and shrink it."""
+    im = Image.open(io.BytesIO(raw))
+    im = ImageOps.exif_transpose(im)          # honour the camera's rotation flag
+    if im.mode not in ("RGB", "L"):
+        im = im.convert("RGB")
+    if max(im.size) > SCAN_LONG_EDGE:
+        ratio = SCAN_LONG_EDGE / max(im.size)
+        im = im.resize((int(im.width * ratio), int(im.height * ratio)), Image.LANCZOS)
+    if enhance:
+        # Make a phone photo look like something off a scanner.
+        im = ImageOps.grayscale(im)
+        im = ImageOps.autocontrast(im, cutoff=2)
+        im = im.filter(ImageFilter.UnsharpMask(radius=2, percent=110, threshold=3))
+    out = io.BytesIO()
+    im.save(out, format="JPEG", quality=82, optimize=True)
+    return out.getvalue()
+
+
+def ocr_page(jpeg: bytes, lang: str, searchable: bool) -> bytes:
+    """One image in, a one-page PDF out. With OCR it carries an invisible
+    text layer, so the words can be selected and searched."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "page.jpg"
+        src.write_bytes(jpeg)
+        if not searchable:
+            im = Image.open(io.BytesIO(jpeg))
+            buf = io.BytesIO()
+            im.convert("RGB").save(buf, format="PDF", resolution=150)
+            return buf.getvalue()
+        stem = Path(tmp) / "page"
+        proc = subprocess.run(
+            ["tesseract", str(src), str(stem), "-l", lang, "--psm", "1", "pdf"],
+            capture_output=True, timeout=90,
+        )
+        made = Path(f"{stem}.pdf")
+        if proc.returncode != 0 or not made.exists():
+            raise HTTPException(500, "Couldn't read the text on that page.")
+        return made.read_bytes()
+
+
+@app.post("/api/scan")
+async def api_scan(
+    files: list[UploadFile] = File(...),
+    language: str = Form("eng"),
+    searchable: str = Form("1"),
+    enhance: str = Form("1"),
+    size: str = Form("A4"),
+    password: str = Form(""),
+):
+    if not files:
+        raise HTTPException(400, "Choose at least one photo.")
+    if len(files) > MAX_SCAN_PAGES:
+        raise HTTPException(
+            400,
+            f"That's {len(files)} photos. This free server can manage {MAX_SCAN_PAGES} at a time — "
+            "do them in batches and merge the results from History.",
+        )
+
+    lang = SCAN_LANGS.get(language, "eng")
+    want_text = searchable != "0"
+    clean = enhance != "0"
+
+    pages: list[bytes] = []
+    for f in files:
+        ext = os.path.splitext((f.filename or "").lower())[1]
+        if ext not in IMAGE_EXT:
+            raise HTTPException(400, f"'{f.filename}' isn't a photo we can read. Use JPG or PNG.")
+        raw = await f.read()
+        if not raw:
+            raise HTTPException(400, f"'{f.filename}' is empty.")
+        if len(raw) > MAX_SCAN_BYTES:
+            raise HTTPException(400, f"'{f.filename}' is bigger than 12 MB.")
+        pages.append(raw)
+
+    loop = asyncio.get_running_loop()
+
+    def build() -> tuple[bytes, int]:
+        writer = PdfWriter()
+        for raw in pages:
+            try:
+                prepped = prepare_scan(raw, clean)
+            except Exception:  # noqa: BLE001
+                raise HTTPException(400, "One of those photos couldn't be opened.")
+            one = ocr_page(prepped, lang, want_text)
+            reader = PdfReader(io.BytesIO(one))
+            for pg in reader.pages:
+                writer.add_page(pg)
+        buf = io.BytesIO()
+        writer.write(buf)
+        return buf.getvalue(), len(writer.pages)
+
+    async with _lock:
+        try:
+            pdf, count = await asyncio.wait_for(
+                loop.run_in_executor(None, build), timeout=SCAN_BUDGET_S
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                504,
+                "Reading the text took too long. Try fewer photos, or switch off "
+                "'make the text searchable' for a quicker plain scan.",
+            )
+        except HTTPException:
+            raise
+        except subprocess.TimeoutExpired:
+            raise HTTPException(504, "Reading the text took too long on one page.")
+        except Exception:  # noqa: BLE001
+            raise HTTPException(500, "Couldn't turn those photos into a PDF.")
+
+    pw = _clean_password(password)
+    if pw:
+        pdf = encrypt_pdf(pdf, pw)
+
+    stem = re.sub(r"\.[a-z0-9]+$", "", files[0].filename or "scan", flags=re.I)
+    filename = safe_filename(stem or "scan", "https://scan")
+    file_id = _store(pdf, filename)
+
+    return JSONResponse({
+        "id": file_id,
+        "filename": filename,
+        "title": stem or "Scan",
+        "source": "photo",
+        "pages": count,
+        "kb": round(len(pdf) / 1024),
+        "style": "scan",
+        "locked": bool(pw),
+        "note": ("The text has been read, so you can select and search it."
+                 if want_text else "Plain image scan — the text isn't selectable."),
         "view": f"/f/{file_id}",
         "download": f"/d/{file_id}",
     })

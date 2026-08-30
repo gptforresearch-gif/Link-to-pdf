@@ -112,7 +112,7 @@
       const el = document.createElement("div");
       el.className = "hrow";
       const kb = r.blob ? Math.round(r.blob.size / 1024) : 0;
-      const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited", docx: "Word document", audio: "Voice note" }[r.style] || r.style;
+      const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited", docx: "Word document", audio: "Voice note", scan: "Scan" }[r.style] || r.style;
       el.innerHTML =
         `<div class="hpick"><input type="checkbox" id="pick-${r.key}"><label for="pick-${r.key}">Select</label></div>
          <p class="htitle"></p>
@@ -309,6 +309,7 @@
         $("textTab").hidden = tab !== "text";
         $("docxTab").hidden = tab !== "docx";
         $("audioTab").hidden = tab !== "audio";
+        $("scanTab").hidden = tab !== "scan";
       }
       if (btn.dataset.mode) { mode = btn.dataset.mode; modeHint.textContent = HINTS[mode]; savePrefs(); }
       if (btn.dataset.size) { size = btn.dataset.size; savePrefs(); }
@@ -355,7 +356,7 @@
   const STAGES = ["Opening the page…", "Loading pictures…", "Laying out the paper…", "Printing to PDF…"];
   function startPress() {
     const inks = [...inkbar.querySelectorAll("i")]; let i = 0;
-    setStatus(tab === "link" ? STAGES[0] : (tab === "docx" ? "Reading the document…" : (tab === "audio" ? "Listening to the recording…" : "Setting the type…")), false);
+    setStatus(tab === "link" ? STAGES[0] : (tab === "docx" ? "Reading the document…" : (tab === "audio" ? "Listening to the recording…" : (tab === "scan" ? "Reading the page…" : "Setting the type…"))), false);
     inkbar.classList.add("pressing"); inks[0].classList.add("wet");
     inkTimer = setInterval(() => {
       i += 1;
@@ -373,6 +374,24 @@
   async function make() {
     const password = $("pw").value;
     let endpoint, payload, form = null;
+
+    if (tab === "scan") {
+      if (!scanFiles.length) { setStatus("Take or choose a photo first.", true); return; }
+      if (scanFiles.length > 5) {
+        setStatus("Five pages at a time is the limit on this server. Do them in batches and merge from History.", true);
+        return;
+      }
+      const bad = scanFiles.find((f) => !IMG_OK.test(f.name));
+      if (bad) { setStatus(`'${bad.name}' isn't a photo we can read. Use JPG or PNG.`, true); return; }
+      form = new FormData();
+      scanFiles.forEach((f) => form.append("files", f));
+      form.append("language", $("scanLang").value);
+      form.append("searchable", $("searchable").checked ? "1" : "0");
+      form.append("enhance", $("enhance").checked ? "1" : "0");
+      form.append("size", size);
+      form.append("password", password || "");
+      endpoint = "/api/scan";
+    }
 
     if (tab === "audio") {
       if (!audioFile) { setStatus("Choose a voice note first.", true); return; }
@@ -453,7 +472,7 @@
   }
 
   function showResult(d) {
-    const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited", docx: "Word document", audio: "Voice note" }[d.style] || "";
+    const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited", docx: "Word document", audio: "Voice note", scan: "Scan" }[d.style] || "";
     $("fileName").textContent = d.filename;
     $("fileSpecs").textContent = `${d.pages} page${d.pages === 1 ? "" : "s"} · ${d.kb} KB · ${size} · ${styleName}`;
     const note = $("fileNote"); note.hidden = !d.note; note.textContent = d.note || "";
@@ -475,6 +494,7 @@
     urlInput.value = ""; $("bodyText").value = "";
     fileInput.value = ""; showFile(null);
     audioInput.value = ""; showAudio(null);
+    scanInput.value = ""; showScans(null);
     // A new document is a new decision: never carry a password over silently.
     $("pw").value = ""; $("pw").type = "password"; $("pwShow").textContent = "Show";
     $("charCount").textContent = "0 characters";
@@ -721,6 +741,7 @@
     $("textTab").hidden = which !== "text";
     $("docxTab").hidden = which !== "docx";
     $("audioTab").hidden = which !== "audio";
+    $("scanTab").hidden = which !== "scan";
   }
 
   function handleShare() {
@@ -901,6 +922,50 @@
       $("passField").hidden = !(audioReady && f.audioPasscode);
     } catch { /* offline: leave as is */ }
   })();
+
+  /* ── photos of paper ───────────────────────────────────────── */
+  let scanFiles = [];
+  const sdrop = $("sdrop"), scanInput = $("scanFiles");
+  const IMG_OK = /\.(jpe?g|png|webp|bmp|heic|heif|gif|tiff?)$/i;
+
+  function showScans(list) {
+    scanFiles = list ? Array.from(list) : [];
+    setStatus("", false);
+    const host = $("scanList");
+    host.innerHTML = "";
+    if (!scanFiles.length) {
+      sdrop.classList.remove("has");
+      $("sdropMain").textContent = "Take or choose photos";
+      $("sdropSub").textContent = "Up to 5 pages at a time";
+      return;
+    }
+    sdrop.classList.add("has");
+    $("sdropMain").textContent = scanFiles.length === 1
+      ? scanFiles[0].name
+      : scanFiles.length + " pages chosen";
+    const total = scanFiles.reduce((n, f) => n + f.size, 0) / 1048576;
+    $("sdropSub").textContent = total.toFixed(1) + " MB — tap Make PDF";
+
+    scanFiles.forEach((f, i) => {
+      const fig = document.createElement("figure");
+      const im = document.createElement("img");
+      im.src = URL.createObjectURL(f);
+      im.onload = () => URL.revokeObjectURL(im.src);
+      const cap = document.createElement("figcaption");
+      cap.textContent = "Page " + (i + 1);
+      fig.appendChild(im); fig.appendChild(cap);
+      host.appendChild(fig);
+    });
+  }
+
+  scanInput.addEventListener("change", (e) => showScans(e.target.files));
+  ["dragenter", "dragover"].forEach((ev) =>
+    sdrop.addEventListener(ev, (e) => { e.preventDefault(); sdrop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) =>
+    sdrop.addEventListener(ev, (e) => { e.preventDefault(); sdrop.classList.remove("over"); }));
+  sdrop.addEventListener("drop", (e) => {
+    if (e.dataTransfer && e.dataTransfer.files.length) showScans(e.dataTransfer.files);
+  });
 
   /* ── offline ───────────────────────────────────────────────── */
   function paintOnline() {

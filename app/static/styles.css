@@ -302,3 +302,24 @@ select#lang{
   background-size:6px 6px,6px 6px;background-repeat:no-repeat;
 }
 select#lang:focus{outline:2px solid var(--cyan);outline-offset:-1px}
+
+/* five tabs */
+.seg.tabs{grid-template-columns:1fr 1fr}
+.seg.tabs button:nth-child(5){grid-column:1 / -1;border-top:1px solid var(--ink);border-right:0}
+select#scanLang{
+  width:100%;font-family:var(--sans);font-size:15px;font-weight:600;color:var(--ink);
+  background:var(--well);border:1px solid var(--rule);padding:14px 13px;
+  -webkit-appearance:none;appearance:none;
+  background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),
+                   linear-gradient(135deg,currentColor 50%,transparent 50%);
+  background-position:calc(100% - 19px) 22px,calc(100% - 13px) 22px;
+  background-size:6px 6px,6px 6px;background-repeat:no-repeat;
+}
+.check{display:flex;gap:11px;align-items:flex-start;margin-bottom:14px;cursor:pointer}
+.check input{width:19px;height:19px;margin-top:2px;accent-color:var(--magenta);flex:0 0 auto}
+.check span{font-size:12.5px;line-height:1.45;color:var(--muted)}
+.check b{display:block;font-size:14px;font-weight:600;color:var(--ink);margin-bottom:2px}
+.scanlist{display:grid;grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:7px;margin-top:12px}
+.scanlist figure{margin:0;border:1px solid var(--rule);background:var(--well);padding:4px}
+.scanlist img{width:100%;height:82px;object-fit:cover;display:block}
+.scanlist figcaption{font-family:var(--mono);font-size:9px;color:var(--muted);text-align:center;margin-top:4px}
