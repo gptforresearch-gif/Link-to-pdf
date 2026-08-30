@@ -39,7 +39,7 @@
     </div>
 
     <div class="toprow">
-      <p class="eyebrow">Web page in · paper out <span class="build">Build 6</span></p>
+      <p class="eyebrow">Web page in · paper out <span class="build">Build 7</span></p>
       <div class="tools">
         <button class="tool" id="historyBtn" aria-label="History" title="History">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5l4 2"/><circle cx="12" cy="12" r="9"/></svg>
@@ -93,6 +93,7 @@
       <button role="tab" aria-selected="true" data-tab="link" class="on">A link</button>
       <button role="tab" aria-selected="false" data-tab="text">Typed text</button>
       <button role="tab" aria-selected="false" data-tab="docx">Word file</button>
+      <button role="tab" aria-selected="false" data-tab="audio">Voice note</button>
     </div>
 
     <div id="linkTab">
@@ -133,6 +134,43 @@
         </label>
         <input id="docxFile" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden>
         <p class="hint">Headings, lists, tables, bold and italic, and pictures all carry over. Complex page layouts and columns won't match exactly. Older .doc files need saving as .docx first.</p>
+      </div>
+    </div>
+
+    <div id="audioTab" hidden>
+      <div class="field">
+        <span class="label">Recording</span>
+        <label class="drop" id="adrop" for="audioFile">
+          <span class="drop-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 3v10"/><path d="M8.5 6.5v3"/><path d="M15.5 6.5v3"/><path d="M5 9v1"/><path d="M19 9v1"/><path d="M12 16v5"/><path d="M8 21h8"/></svg>
+          </span>
+          <span class="drop-main" id="adropMain">Choose a voice note</span>
+          <span class="drop-sub" id="adropSub">Or drag one here</span>
+        </label>
+        <input id="audioFile" type="file" accept="audio/*,.opus,.ogg,.m4a,.mp3,.wav" hidden>
+      </div>
+
+      <div class="field">
+        <label class="label" for="lang">Language spoken</label>
+        <select id="lang">
+          <option value="auto">Detect automatically</option>
+          <option value="en">English</option>
+          <option value="hi">Hindi</option>
+          <option value="gu">Gujarati</option>
+          <option value="bho">Bhojpuri</option>
+        </select>
+        <p class="hint" id="langHint">The speech is turned into text, then into a PDF.</p>
+      </div>
+
+      <div class="field" id="passField" hidden>
+        <label class="label" for="passcode">Passcode</label>
+        <input id="passcode" type="password" autocomplete="off" placeholder="Required for voice notes">
+        <p class="hint">Transcribing costs a little money, so this is kept behind a passcode.</p>
+      </div>
+
+      <div class="alert" id="audioOff" hidden>
+        <p class="alert-head">Not switched on yet</p>
+        <p class="alert-body">Voice notes need an OpenRouter key set on the server. Everything else in the app works without it.</p>
       </div>
     </div>
 

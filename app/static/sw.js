@@ -1,4 +1,4 @@
-const SHELL = "linkpdf-v6";
+const SHELL = "linkpdf-v7";
 const HANDOFF = "linkpdf-handoff";   // holds a shared file between share and app
 
 const FILES = [

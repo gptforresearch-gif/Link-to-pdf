@@ -13,6 +13,7 @@ from html import escape
 from pathlib import Path
 from urllib.parse import urlparse
 
+import httpx
 import mammoth
 import trafilatura
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -280,7 +281,7 @@ def encrypt_pdf(data: bytes, password: str) -> bytes:
         raise HTTPException(500, "Couldn't put a password on that PDF.")
 
 
-def text_to_html(text: str, title: str) -> str:
+def text_to_html(text: str, title: str, source: str = "typed text") -> str:
     """Blank lines separate paragraphs; single line breaks are kept."""
     blocks = re.split(r"\n\s*\n", text.strip())
     body = "".join(
@@ -290,7 +291,7 @@ def text_to_html(text: str, title: str) -> str:
     return READER_TEMPLATE.format(
         base="about:blank",
         title=escape(title) if title else "Untitled note",
-        source="typed text",
+        source=source,
         date=time.strftime("%d %b %Y"),
         body=body or "<p></p>",
     )
@@ -325,8 +326,8 @@ async def render_html_pdf(html: str, size: str) -> bytes:
         await context.close()
 
 
-async def render_text_pdf(text: str, title: str, size: str) -> bytes:
-    return await render_html_pdf(text_to_html(text, title), size)
+async def render_text_pdf(text: str, title: str, size: str, source: str = "typed text") -> bytes:
+    return await render_html_pdf(text_to_html(text, title, source), size)
 
 
 def _looks_like_index(html: str) -> bool:
@@ -813,6 +814,158 @@ async def api_docx(
         "style": "docx",
         "locked": bool(pw),
         "note": None,
+        "view": f"/f/{file_id}",
+        "download": f"/d/{file_id}",
+    })
+
+
+# ----------------------------------------------------------------------------
+# Voice notes
+# ----------------------------------------------------------------------------
+
+OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
+AUDIO_PASSCODE = os.environ.get("AUDIO_PASSCODE", "").strip()
+AUDIO_MODEL = os.environ.get("AUDIO_MODEL", "openai/whisper-1").strip()
+
+MAX_AUDIO_BYTES = 20 * 1024 * 1024     # the service itself refuses above 25 MB
+AUDIO_TIMEOUT_S = 115                  # the service gives up upstream at 60s
+
+AUDIO_TYPES = {
+    ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".mp4": "audio/mp4",
+    ".wav": "audio/wav", ".webm": "audio/webm", ".ogg": "audio/ogg",
+    ".oga": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac",
+    ".aac": "audio/aac", ".mpeg": "audio/mpeg", ".mpga": "audio/mpeg",
+}
+
+# Whisper takes a two-letter hint. Bhojpuri has no code it recognises, so it is
+# sent as Hindi, which is the closest thing it has been trained on.
+AUDIO_LANGS = {
+    "auto": None, "en": "en", "hi": "hi", "gu": "gu", "bho": "hi",
+}
+
+
+@app.get("/api/features")
+async def api_features():
+    """Lets the page show the right thing instead of failing mysteriously."""
+    return {"audio": bool(OPENROUTER_KEY), "audioPasscode": bool(AUDIO_PASSCODE)}
+
+
+async def transcribe(data: bytes, filename: str, mime: str, lang: str | None) -> tuple[str, dict]:
+    form = {"model": (None, AUDIO_MODEL)}
+    if lang:
+        form["language"] = (None, lang)
+    files = {"file": (filename, data, mime), **form}
+    async with httpx.AsyncClient(timeout=AUDIO_TIMEOUT_S) as client:
+        r = await client.post(
+            "https://openrouter.ai/api/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {OPENROUTER_KEY}"},
+            files=files,
+        )
+    if r.status_code == 401:
+        raise HTTPException(502, "The transcription key was rejected. Check OPENROUTER_API_KEY on the server.")
+    if r.status_code == 402:
+        raise HTTPException(502, "The OpenRouter account is out of credit.")
+    if r.status_code == 429:
+        raise HTTPException(429, "Too many transcriptions at once. Wait a moment and try again.")
+    if r.status_code >= 400:
+        raise HTTPException(502, "The transcription service refused that file.")
+    body = r.json()
+    text = (body.get("text") or "").strip()
+    return text, (body.get("usage") or {})
+
+
+@app.post("/api/audio")
+async def api_audio(
+    file: UploadFile = File(...),
+    language: str = Form("auto"),
+    passcode: str = Form(""),
+    size: str = Form("A4"),
+    password: str = Form(""),
+):
+    if not OPENROUTER_KEY:
+        raise HTTPException(
+            503,
+            "Voice notes aren't switched on. The server needs an OPENROUTER_API_KEY setting.",
+        )
+    if AUDIO_PASSCODE and passcode.strip() != AUDIO_PASSCODE:
+        raise HTTPException(403, "Wrong passcode. Voice notes are limited to keep the bill down.")
+
+    name = (file.filename or "voice-note").strip()
+    ext = os.path.splitext(name.lower())[1]
+    if ext not in AUDIO_TYPES:
+        raise HTTPException(
+            400,
+            "That isn't an audio file we can read. Voice notes, MP3, M4A, WAV and OGG all work.",
+        )
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "That audio file is empty.")
+    if len(data) > MAX_AUDIO_BYTES:
+        raise HTTPException(400, "That recording is too big. The limit is 20 MB — about 40 minutes of voice note.")
+
+    # WhatsApp voice notes arrive as .opus, which the service doesn't recognise
+    # by name even though it reads the contents fine.
+    send_name = re.sub(r"\.opus$", ".ogg", name, flags=re.I)
+
+    try:
+        text, usage = await asyncio.wait_for(
+            transcribe(data, send_name, AUDIO_TYPES[ext], AUDIO_LANGS.get(language)),
+            timeout=AUDIO_TIMEOUT_S + 5,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "That recording took too long to transcribe. Try a shorter one.")
+    except HTTPException:
+        raise
+    except httpx.RequestError:
+        raise HTTPException(502, "Couldn't reach the transcription service. Try again in a moment.")
+
+    if not text:
+        raise HTTPException(422, "No speech was found in that recording.")
+
+    title = re.sub(r"\.[a-z0-9]+$", "", name, flags=re.I) or "Voice note"
+    paper = size if size in PAGE_SIZES else "A4"
+    pw = _clean_password(password)
+
+    sweep_old_files()
+    async with _lock:
+        try:
+            pdf = await asyncio.wait_for(
+                render_text_pdf(text, title, paper, "voice note"), timeout=40
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(504, "That transcript took too long to lay out.")
+        except Exception:  # noqa: BLE001
+            raise HTTPException(500, "Couldn't turn that transcript into a PDF.")
+
+    pages = count_pdf_pages(pdf)
+    if pw:
+        pdf = encrypt_pdf(pdf, pw)
+
+    filename = safe_filename(title, "https://voice.note")
+    file_id = _store(pdf, filename)
+
+    secs = usage.get("seconds")
+    cost = usage.get("cost")
+    bits = []
+    if secs:
+        bits.append(f"{int(secs) // 60}m {int(secs) % 60}s of audio")
+    if cost:
+        bits.append(f"cost ${float(cost):.4f}")
+    if language == "bho":
+        bits.append("Bhojpuri was transcribed using the Hindi model")
+
+    return JSONResponse({
+        "id": file_id,
+        "filename": filename,
+        "title": title,
+        "source": "voice note",
+        "pages": pages,
+        "kb": round(len(pdf) / 1024),
+        "style": "audio",
+        "locked": bool(pw),
+        "note": (" · ".join(bits) + ".") if bits else None,
+        "words": len(text.split()),
         "view": f"/f/{file_id}",
         "download": f"/d/{file_id}",
     })

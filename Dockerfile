@@ -14,6 +14,8 @@ WORKDIR /srv
 # Keep this version in step with the playwright pin in requirements.txt.
 RUN pip install --no-cache-dir playwright==1.49.1 \
  && playwright install --with-deps chromium \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends fonts-indic fonts-noto-core \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 

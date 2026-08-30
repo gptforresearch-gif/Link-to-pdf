@@ -112,7 +112,7 @@
       const el = document.createElement("div");
       el.className = "hrow";
       const kb = r.blob ? Math.round(r.blob.size / 1024) : 0;
-      const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited", docx: "Word document" }[r.style] || r.style;
+      const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited", docx: "Word document", audio: "Voice note" }[r.style] || r.style;
       el.innerHTML =
         `<div class="hpick"><input type="checkbox" id="pick-${r.key}"><label for="pick-${r.key}">Select</label></div>
          <p class="htitle"></p>
@@ -308,6 +308,7 @@
         $("linkTab").hidden = tab !== "link";
         $("textTab").hidden = tab !== "text";
         $("docxTab").hidden = tab !== "docx";
+        $("audioTab").hidden = tab !== "audio";
       }
       if (btn.dataset.mode) { mode = btn.dataset.mode; modeHint.textContent = HINTS[mode]; savePrefs(); }
       if (btn.dataset.size) { size = btn.dataset.size; savePrefs(); }
@@ -354,7 +355,7 @@
   const STAGES = ["Opening the page…", "Loading pictures…", "Laying out the paper…", "Printing to PDF…"];
   function startPress() {
     const inks = [...inkbar.querySelectorAll("i")]; let i = 0;
-    setStatus(tab === "link" ? STAGES[0] : (tab === "docx" ? "Reading the document…" : "Setting the type…"), false);
+    setStatus(tab === "link" ? STAGES[0] : (tab === "docx" ? "Reading the document…" : (tab === "audio" ? "Listening to the recording…" : "Setting the type…")), false);
     inkbar.classList.add("pressing"); inks[0].classList.add("wet");
     inkTimer = setInterval(() => {
       i += 1;
@@ -372,6 +373,21 @@
   async function make() {
     const password = $("pw").value;
     let endpoint, payload, form = null;
+
+    if (tab === "audio") {
+      if (!audioFile) { setStatus("Choose a voice note first.", true); return; }
+      if (!AUDIO_OK.test(audioFile.name)) {
+        setStatus("That isn't an audio file we can read. Voice notes, MP3, M4A, WAV and OGG all work.", true);
+        return;
+      }
+      form = new FormData();
+      form.append("file", audioFile);
+      form.append("language", $("lang").value);
+      form.append("passcode", $("passcode").value || "");
+      form.append("size", size);
+      form.append("password", password || "");
+      endpoint = "/api/audio";
+    }
 
     if (tab === "docx") {
       if (!docxFile) { setStatus("Choose a Word document first.", true); return; }
@@ -437,7 +453,7 @@
   }
 
   function showResult(d) {
-    const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited", docx: "Word document" }[d.style] || "";
+    const styleName = { exact: "Exact copy", reader: "Reading version", lite: "Simplified", text: "Typed text", merged: "Merged", edited: "Edited", docx: "Word document", audio: "Voice note" }[d.style] || "";
     $("fileName").textContent = d.filename;
     $("fileSpecs").textContent = `${d.pages} page${d.pages === 1 ? "" : "s"} · ${d.kb} KB · ${size} · ${styleName}`;
     const note = $("fileNote"); note.hidden = !d.note; note.textContent = d.note || "";
@@ -458,6 +474,7 @@
     current = null; blobCache = null;
     urlInput.value = ""; $("bodyText").value = "";
     fileInput.value = ""; showFile(null);
+    audioInput.value = ""; showAudio(null);
     // A new document is a new decision: never carry a password over silently.
     $("pw").value = ""; $("pw").type = "password"; $("pwShow").textContent = "Show";
     $("charCount").textContent = "0 characters";
@@ -662,12 +679,28 @@
         type: blob.type || "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       });
 
+      // Send it to whichever tab handles that kind of file.
+      if (AUDIO_OK.test(name)) {
+        pickTab("audio");
+        showAudio(file);
+        if (!audioReady) {
+          setStatus("Voice notes aren't switched on yet on the server.", true);
+          return true;
+        }
+        if (!$("passField").hidden && !$("passcode").value) {
+          setStatus("Enter the passcode, then tap Make PDF.", false);
+          return true;
+        }
+        make();
+        return true;
+      }
+
       pickTab("docx");
       showFile(file);
       if (!/\.docx$/i.test(name)) {
         setStatus(/\.doc$/i.test(name)
           ? "That's an older .doc file. Open it in Word, use Save As, and choose .docx."
-          : "Only Word .docx files can be converted. Choose a different file.", true);
+          : "That file type can't be converted. Word .docx files and voice notes work.", true);
         return true;
       }
       make();
@@ -687,6 +720,7 @@
     $("linkTab").hidden = which !== "link";
     $("textTab").hidden = which !== "text";
     $("docxTab").hidden = which !== "docx";
+    $("audioTab").hidden = which !== "audio";
   }
 
   function handleShare() {
@@ -819,6 +853,54 @@
     const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (f) showFile(f);
   });
+
+  /* ── voice notes ───────────────────────────────────────────── */
+  let audioFile = null;
+  const adrop = $("adrop"), audioInput = $("audioFile");
+  const AUDIO_OK = /\.(mp3|m4a|mp4|wav|webm|ogg|oga|opus|flac|aac|mpeg|mpga)$/i;
+
+  function showAudio(f) {
+    audioFile = f || null;
+    setStatus("", false);
+    if (!f) {
+      adrop.classList.remove("has");
+      $("adropMain").textContent = "Choose a voice note";
+      $("adropSub").textContent = "Or drag one here";
+      return;
+    }
+    adrop.classList.add("has");
+    $("adropMain").textContent = f.name;
+    const mb = f.size / 1048576;
+    $("adropSub").textContent = (mb < 1 ? Math.round(f.size / 1024) + " KB" : mb.toFixed(1) + " MB")
+      + " — tap Make PDF";
+  }
+
+  audioInput.addEventListener("change", (e) => showAudio(e.target.files[0]));
+  ["dragenter", "dragover"].forEach((ev) =>
+    adrop.addEventListener(ev, (e) => { e.preventDefault(); adrop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) =>
+    adrop.addEventListener(ev, (e) => { e.preventDefault(); adrop.classList.remove("over"); }));
+  adrop.addEventListener("drop", (e) => {
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) showAudio(f);
+  });
+
+  $("lang").addEventListener("change", (e) => {
+    $("langHint").textContent = e.target.value === "bho"
+      ? "Bhojpuri isn't directly supported, so the Hindi model is used. Expect rough results."
+      : "The speech is turned into text, then into a PDF.";
+  });
+
+  // Ask the server whether voice notes are switched on at all.
+  let audioReady = false;
+  (async () => {
+    try {
+      const f = await (await fetch("/api/features", { cache: "no-store" })).json();
+      audioReady = !!f.audio;
+      $("audioOff").hidden = audioReady;
+      $("passField").hidden = !(audioReady && f.audioPasscode);
+    } catch { /* offline: leave as is */ }
+  })();
 
   /* ── offline ───────────────────────────────────────────────── */
   function paintOnline() {
