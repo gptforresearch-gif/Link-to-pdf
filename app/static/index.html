@@ -39,7 +39,7 @@
     </div>
 
     <div class="toprow">
-      <p class="eyebrow">Web page in · paper out <span class="build">Build 8</span></p>
+      <p class="eyebrow">Web page in · paper out <span class="build">Build 9</span></p>
       <div class="tools">
         <button class="tool" id="historyBtn" aria-label="History" title="History">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5l4 2"/><circle cx="12" cy="12" r="9"/></svg>
@@ -190,6 +190,15 @@
       </div>
 
       <div class="field">
+        <span class="label">What to make</span>
+        <div class="seg" role="radiogroup" aria-label="What to make">
+          <button role="radio" aria-checked="true" data-out="scan" class="on">A scan</button>
+          <button role="radio" aria-checked="false" data-out="text">Just the text</button>
+        </div>
+        <p class="hint" id="outHint">A picture of the page, with the words readable underneath so you can select and search them.</p>
+      </div>
+
+      <div class="field">
         <label class="label" for="scanLang">Language on the page</label>
         <select id="scanLang">
           <option value="eng">English</option>
@@ -200,7 +209,7 @@
         </select>
       </div>
 
-      <div class="field">
+      <div class="field" id="scanOpts">
         <label class="check"><input type="checkbox" id="searchable" checked>
           <span><b>Make the text searchable</b>Reads the words so you can select and search them. Slower — roughly 15 seconds a page on the free server.</span></label>
         <label class="check"><input type="checkbox" id="enhance" checked>

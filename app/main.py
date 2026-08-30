@@ -1124,6 +1124,102 @@ async def api_scan(
     })
 
 
+def ocr_text(jpeg: bytes, lang: str) -> str:
+    """Read the words off a page and hand back plain text."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "page.jpg"
+        src.write_bytes(jpeg)
+        proc = subprocess.run(
+            ["tesseract", str(src), "stdout", "-l", lang, "--psm", "1"],
+            capture_output=True, timeout=90,
+        )
+        if proc.returncode != 0:
+            raise HTTPException(500, "Couldn't read the text on that page.")
+        return proc.stdout.decode("utf-8", "replace")
+
+
+def tidy_ocr(raw: str) -> str:
+    """Tesseract breaks lines where the page does. Join them back into
+    paragraphs so the result reads like text rather than a column."""
+    out = []
+    for block in re.split(r"\n\s*\n", raw):
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        joined = []
+        for ln in lines:
+            # A new list item always starts its own line.
+            starts_item = re.match(r"^(\d+[.)]|[-–•*·])\s", ln)
+            prev = joined[-1] if joined else ""
+            if (joined and not starts_item
+                    and not re.search(r"[.!?:;]$", prev) and len(prev) > 45):
+                joined[-1] = prev + " " + ln
+            else:
+                joined.append(ln)
+        out.append("\n".join(joined))
+    return "\n\n".join(out).strip()
+
+
+@app.post("/api/ocr-text")
+async def api_ocr_text(
+    files: list[UploadFile] = File(...),
+    language: str = Form("eng"),
+    enhance: str = Form("1"),
+):
+    if not files:
+        raise HTTPException(400, "Choose at least one photo.")
+    if len(files) > MAX_SCAN_PAGES:
+        raise HTTPException(400, f"Up to {MAX_SCAN_PAGES} photos at a time on this server.")
+
+    lang = SCAN_LANGS.get(language, "eng")
+    clean = enhance != "0"
+
+    raws = []
+    for f in files:
+        ext = os.path.splitext((f.filename or "").lower())[1]
+        if ext not in IMAGE_EXT:
+            raise HTTPException(400, f"'{f.filename}' isn't a photo we can read. Use JPG or PNG.")
+        data = await f.read()
+        if not data:
+            raise HTTPException(400, f"'{f.filename}' is empty.")
+        if len(data) > MAX_SCAN_BYTES:
+            raise HTTPException(400, f"'{f.filename}' is bigger than 12 MB.")
+        raws.append(data)
+
+    loop = asyncio.get_running_loop()
+
+    def read_all() -> str:
+        parts = []
+        for raw in raws:
+            try:
+                prepped = prepare_scan(raw, clean)
+            except Exception:  # noqa: BLE001
+                raise HTTPException(400, "One of those photos couldn't be opened.")
+            parts.append(tidy_ocr(ocr_text(prepped, lang)))
+        return "\n\n".join(p for p in parts if p).strip()
+
+    async with _lock:
+        try:
+            text = await asyncio.wait_for(
+                loop.run_in_executor(None, read_all), timeout=SCAN_BUDGET_S
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(504, "Reading the text took too long. Try fewer photos.")
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001
+            raise HTTPException(500, "Couldn't read the text on those photos.")
+
+    if not text:
+        raise HTTPException(422, "No readable text was found. Try a sharper photo, or better light.")
+
+    return JSONResponse({
+        "text": text,
+        "pages": len(raws),
+        "words": len(text.split()),
+    })
+
+
 def _lookup(file_id: str) -> tuple[Path, str]:
     if not re.fullmatch(r"[a-f0-9]{12}", file_id):
         raise HTTPException(404, "Not found")

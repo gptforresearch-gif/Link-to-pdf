@@ -310,9 +310,19 @@
         $("docxTab").hidden = tab !== "docx";
         $("audioTab").hidden = tab !== "audio";
         $("scanTab").hidden = tab !== "scan";
+        goBtn.textContent = (tab === "scan" && scanOut === "text") ? "Read the text" : "Make PDF";
       }
       if (btn.dataset.mode) { mode = btn.dataset.mode; modeHint.textContent = HINTS[mode]; savePrefs(); }
       if (btn.dataset.size) { size = btn.dataset.size; savePrefs(); }
+      if (btn.dataset.out) {
+        scanOut = btn.dataset.out;
+        const textMode = scanOut === "text";
+        $("scanOpts").hidden = textMode;
+        $("outHint").textContent = textMode
+          ? "The words are typed out for you to check and correct, then you make the PDF."
+          : "A picture of the page, with the words readable underneath so you can select and search them.";
+        goBtn.textContent = textMode ? "Read the text" : "Make PDF";
+      }
     });
   });
 
@@ -374,6 +384,12 @@
   async function make() {
     const password = $("pw").value;
     let endpoint, payload, form = null;
+
+    if (tab === "scan" && scanOut === "text") {
+      if (!scanFiles.length) { setStatus("Take or choose a photo first.", true); return; }
+      await readTextFromPhotos();
+      return;
+    }
 
     if (tab === "scan") {
       if (!scanFiles.length) { setStatus("Take or choose a photo first.", true); return; }
@@ -468,6 +484,45 @@
       clearTimeout(wakeTimer); $("waking").hidden = true;
       stopPress(); goBtn.disabled = false; goBtn.textContent = "Make PDF";
       paintOnline();
+    }
+  }
+
+  // Photos in, editable words out. The user gets to fix OCR mistakes before
+  // anything is committed to a PDF.
+  async function readTextFromPhotos() {
+    const form = new FormData();
+    scanFiles.forEach((f) => form.append("files", f));
+    form.append("language", $("scanLang").value);
+    form.append("enhance", $("enhance").checked ? "1" : "0");
+
+    goBtn.disabled = true; goBtn.textContent = "Reading…"; startPress();
+    setStatus("Reading the words off the page…", false);
+    const wake = setTimeout(() => { $("waking").hidden = false; }, 4000);
+    try {
+      const res = await fetch("/api/ocr-text", { method: "POST", body: form });
+      const raw = await res.text();
+      let data = null;
+      if (raw) { try { data = JSON.parse(raw); } catch {} }
+      if (!res.ok || !data || !data.text) {
+        throw new Error((data && data.detail) || explain(res.status, "scan"));
+      }
+      pickTab("text");
+      $("bodyText").value = data.text;
+      $("charCount").textContent = data.text.length.toLocaleString() + " characters";
+      setStatus(
+        `Read ${data.words} words from ${data.pages} page${data.pages === 1 ? "" : "s"}. ` +
+        "Check it over — OCR makes mistakes — then tap Make PDF.", false);
+      $("bodyText").scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch (err) {
+      const network = err instanceof TypeError ||
+        /failed to fetch|networkerror|load failed/i.test((err && err.message) || "");
+      setStatus(network
+        ? "Couldn't reach the server. Check your connection and try again."
+        : (err && err.message) || "Couldn't read that photo.", true);
+    } finally {
+      clearTimeout(wake); $("waking").hidden = true;
+      stopPress(); goBtn.disabled = false;
+      goBtn.textContent = (tab === "scan" && scanOut === "text") ? "Read the text" : "Make PDF";
     }
   }
 
@@ -742,6 +797,7 @@
     $("docxTab").hidden = which !== "docx";
     $("audioTab").hidden = which !== "audio";
     $("scanTab").hidden = which !== "scan";
+    goBtn.textContent = (which === "scan" && scanOut === "text") ? "Read the text" : "Make PDF";
   }
 
   function handleShare() {
@@ -925,6 +981,7 @@
 
   /* ── photos of paper ───────────────────────────────────────── */
   let scanFiles = [];
+  let scanOut = "scan";
   const sdrop = $("sdrop"), scanInput = $("scanFiles");
   const IMG_OK = /\.(jpe?g|png|webp|bmp|heic|heif|gif|tiff?)$/i;
 
