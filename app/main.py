@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 import mammoth
 import trafilatura
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
 from pydantic import BaseModel
@@ -843,6 +843,17 @@ async def view_pdf(file_id: str):
 async def download_pdf(file_id: str):
     path, name = _lookup(file_id)
     return FileResponse(path, media_type="application/pdf", filename=name)
+
+
+@app.post("/share-file")
+async def share_file_fallback():
+    """Reached only if the service worker isn't active. Send them to the app."""
+    return RedirectResponse("/?shared=failed", status_code=303)
+
+
+@app.get("/share-file")
+async def share_file_get():
+    return RedirectResponse("/", status_code=303)
 
 
 @app.get("/share")

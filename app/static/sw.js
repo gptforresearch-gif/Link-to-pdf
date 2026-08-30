@@ -1,6 +1,6 @@
-const SHELL = "linkpdf-v5";
+const SHELL = "linkpdf-v6";
+const HANDOFF = "linkpdf-handoff";   // holds a shared file between share and app
 
-// Everything the app needs to open with no server at all.
 const FILES = [
   "/", "/styles.css", "/app.js",
   "/vendor/pdf-lib.min.js", "/vendor/pdf.min.mjs", "/vendor/pdf.worker.min.mjs",
@@ -9,7 +9,6 @@ const FILES = [
 self.addEventListener("install", (e) => {
   e.waitUntil(
     caches.open(SHELL)
-      // Vendor files are large; don't fail the whole install if one misses.
       .then((c) => Promise.allSettled(FILES.map((f) => c.add(f))))
       .then(() => self.skipWaiting())
   );
@@ -18,39 +17,74 @@ self.addEventListener("install", (e) => {
 self.addEventListener("activate", (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== SHELL).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(
+        // Keep the handoff store; it may hold a file mid-share.
+        keys.filter((k) => k !== SHELL && k !== HANDOFF).map((k) => caches.delete(k))
+      ))
       .then(() => self.clients.claim())
   );
 });
 
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
+
+  // ── Android handing us a share ────────────────────────────────
+  // A file-capable share target must be POST, so links and files both
+  // arrive here. Sort out which, stash anything large, and send the app
+  // a plain URL it can act on.
+  if (e.request.method === "POST" && url.pathname === "/share-file") {
+    e.respondWith((async () => {
+      let dest = "/?shared=empty";
+      try {
+        const form = await e.request.formData();
+        const file = form.get("file");
+        const text = form.get("text") || form.get("url") || form.get("title") || "";
+
+        if (file && file.size) {
+          // A Response body can't be a File, so keep the name in a header.
+          const store = await caches.open(HANDOFF);
+          await store.put("/__shared-file", new Response(file, {
+            headers: {
+              "Content-Type": file.type || "application/octet-stream",
+              "X-Filename": encodeURIComponent(file.name || "document.docx"),
+            },
+          }));
+          dest = "/?shared=file";
+        } else if (String(text).trim()) {
+          dest = "/?text=" + encodeURIComponent(text);
+        }
+      } catch {
+        dest = "/?shared=failed";
+      }
+      return Response.redirect(new URL(dest, self.location.origin).href, 303);
+    })());
+    return;
+  }
+
   if (e.request.method !== "GET" || url.origin !== location.origin) return;
 
-  // Android reads these when installing the app; a stale copy breaks the
-  // share-menu entry, so they always come from the network.
+  // Android reads these when installing; a stale copy breaks the share entry.
   if (url.pathname === "/manifest.json" || url.pathname.startsWith("/icon-")) return;
 
-  // Generated PDFs and the API are never cached.
+  // Generated PDFs and the API always go to the network.
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/f/") ||
       url.pathname.startsWith("/d/")) return;
 
-  // Everything else — the app itself — comes from the cache first. This is what
-  // lets the app open instantly while the free server is still waking up, and
-  // what makes it work with no connection at all. A fresh copy is fetched in
-  // the background for next time.
+  // The app itself: cache first, so it opens instantly while the free server
+  // wakes, and works with no connection at all.
   e.respondWith(
-    caches.match(e.request, { ignoreSearch: url.pathname === "/share" }).then((hit) => {
-      const fresh = fetch(e.request)
-        .then((res) => {
-          if (res && res.ok) {
-            const copy = res.clone();
-            caches.open(SHELL).then((c) => c.put(e.request, copy)).catch(() => {});
-          }
-          return res;
-        })
-        .catch(() => hit || caches.match("/"));
-      return hit || fresh;
-    })
+    caches.match(e.request, { ignoreSearch: url.pathname === "/" || url.pathname === "/share" })
+      .then((hit) => {
+        const fresh = fetch(e.request)
+          .then((res) => {
+            if (res && res.ok) {
+              const copy = res.clone();
+              caches.open(SHELL).then((c) => c.put(e.request, copy)).catch(() => {});
+            }
+            return res;
+          })
+          .catch(() => hit || caches.match("/"));
+        return hit || fresh;
+      })
   );
 });

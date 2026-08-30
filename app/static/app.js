@@ -648,8 +648,63 @@
     }
     return "";
   }
+  // A file arrived via the share sheet: pull it out of the handoff store and
+  // drop the user straight into the Word tab with it ready to go.
+  async function handleSharedFile() {
+    try {
+      const store = await caches.open("linkpdf-handoff");
+      const res = await store.match("/__shared-file");
+      if (!res) return false;
+      await store.delete("/__shared-file");
+      const blob = await res.blob();
+      const name = decodeURIComponent(res.headers.get("X-Filename") || "document.docx");
+      const file = new File([blob], name, {
+        type: blob.type || "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      });
+
+      pickTab("docx");
+      showFile(file);
+      if (!/\.docx$/i.test(name)) {
+        setStatus(/\.doc$/i.test(name)
+          ? "That's an older .doc file. Open it in Word, use Save As, and choose .docx."
+          : "Only Word .docx files can be converted. Choose a different file.", true);
+        return true;
+      }
+      make();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function pickTab(which) {
+    tab = which;
+    document.querySelectorAll("[data-tab]").forEach((b) => {
+      const on = b.dataset.tab === which;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    $("linkTab").hidden = which !== "link";
+    $("textTab").hidden = which !== "text";
+    $("docxTab").hidden = which !== "docx";
+  }
+
   function handleShare() {
     const q = new URLSearchParams(location.search);
+
+    if (q.get("shared") === "file") {
+      history.replaceState(null, "", "/");
+      handleSharedFile().then((ok) => {
+        if (!ok) setStatus("That shared file didn't come through. Choose it here instead.", true);
+      });
+      return;
+    }
+    if (q.get("shared") === "empty" || q.get("shared") === "failed") {
+      history.replaceState(null, "", "/");
+      setStatus("That share didn't contain anything we could convert.", true);
+      return;
+    }
+
     if (!q.has("url") && !q.has("text") && !q.has("title")) return;
     const link = pickLink(q.get("url"), q.get("text"), q.get("title"));
     const shared = q.get("text") || "";
@@ -658,12 +713,7 @@
     if (link) { urlInput.value = link; make(); return; }
     // Shared plain text with no link in it: send it to the text side instead.
     if (shared.trim()) {
-      tab = "text";
-      document.querySelectorAll("[data-tab]").forEach((b) => {
-        const on = b.dataset.tab === "text";
-        b.classList.toggle("on", on); b.setAttribute("aria-selected", on ? "true" : "false");
-      });
-      $("linkTab").hidden = true; $("textTab").hidden = false;
+      pickTab("text");
       $("bodyText").value = shared;
       $("charCount").textContent = shared.length.toLocaleString() + " characters";
       setStatus("That share had no link in it, so it's ready as text instead.", false);
